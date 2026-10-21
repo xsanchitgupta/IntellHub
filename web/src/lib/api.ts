@@ -69,6 +69,8 @@ export interface AgentResult {
   speech?: string;
   /** Records the copilot read to produce this answer, in order. */
   trace?: AgentTraceStep[];
+  /** The Copilot conversation this exchange was saved to; send it back to continue it. */
+  conversation_id?: string;
   /** "llm:<provider>" when a language model answered, "deterministic" otherwise. */
   mode?: string;
   /** Identifier verification performed server-side. `grounded: false` means the
@@ -100,12 +102,14 @@ export async function askAgent(
   history: ChatTurn[] = [],
   lang = "en",
   page?: string,
-  context?: AgentContext
+  context?: AgentContext,
+  conversationId?: string | null
 ): Promise<AgentResult> {
+  // Every exchange is saved to the officer's Copilot history; the id keeps one chat in one thread.
   const res = await apiFetch("/agent", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ query, history, lang, page, context }),
+    body: JSON.stringify({ query, history, lang, page, context, conversation_id: conversationId ?? undefined }),
   });
   return res.json();
 }

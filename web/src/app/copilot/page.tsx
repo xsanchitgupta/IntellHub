@@ -26,7 +26,13 @@ type Msg = {
   /** Set on an answer that just arrived, so only it is typed out. */
   fresh?: boolean;
 };
-type Conv = { id: string; title: string; updated: number; pinned?: boolean; messages: number; preview?: string };
+type Conv = { id: string; title: string; updated: number; pinned?: boolean; messages: number; preview?: string; origin?: string | null };
+
+/** The page a chat with the floating assistant began on, as a short label. */
+function originLabel(path: string) {
+  const name = path.split("?")[0].replace(/^\/+/, "").split("/")[0] || "home";
+  return name.charAt(0).toUpperCase() + name.slice(1);
+}
 
 const STARTERS = [
   { icon: MapPinned, title: "What's happening in Bengaluru right now?", hint: "Live brief: FIRs, spikes, cameras" },
@@ -157,6 +163,12 @@ function CopilotInner() {
       .catch((e) => e instanceof ApiError && e.isForbidden && setLocked(true)), []);
 
   useEffect(() => { loadList(); }, [loadList]);
+  // Chats with the floating assistant on other pages land here too; pick them up on return.
+  useEffect(() => {
+    const onFocus = () => loadList(q);
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [loadList, q]);
   useEffect(() => { const t = setTimeout(() => loadList(q), 250); return () => clearTimeout(t); }, [q, loadList]);
 
   useEffect(() => {
@@ -281,7 +293,15 @@ function CopilotInner() {
                         </form>
                       ) : (
                         <button onClick={() => select(c.id)} className="block w-full px-2.5 py-2 pr-16 text-left">
-                          <div className="truncate text-[13px] font-medium text-ink">{c.title}</div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="truncate text-[13px] font-medium text-ink">{c.title}</span>
+                            {c.origin && (
+                              <span title={`Started with the assistant on ${c.origin}`}
+                                    className="shrink-0 rounded bg-black/[0.05] px-1 py-px text-[9.5px] font-semibold uppercase tracking-wider text-faint">
+                                {originLabel(c.origin)}
+                              </span>
+                            )}
+                          </div>
                           <div className="truncate text-[11px] text-faint">{c.preview?.replace(/\*\*/g, "") || "No answers yet"}</div>
                         </button>
                       )}

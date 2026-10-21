@@ -22,6 +22,10 @@
 - pandas / numpy
 - networkx (knowledge graph, Adamic-Adar, Louvain)
 - CSV-backed in-memory store over the 26-table CCTNS-shaped schema
+- `appsail/investigation.py` — record-integrity checks, crime series (union-find),
+  Rossmo geographic profiling, Heuer ACH, under-reporting (leave-one-out ridge,
+  Wilson intervals), IO shortlisting — numpy/pandas only, every finding cited
+- `appsail/statutes.py` — IPC ↔ BNS cross-walk keyed on the offence date
 
 ## AI / ML
 - scikit-learn — the whole ML layer, no other modelling dependency

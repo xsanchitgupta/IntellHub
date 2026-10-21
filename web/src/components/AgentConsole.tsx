@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
-import { Mic, MicOff, Send, X, ArrowRight, Volume2, VolumeX, RotateCcw, ChevronDown, Pause, Play, Square } from "lucide-react";
+import { Mic, MicOff, Send, X, ArrowRight, Volume2, VolumeX, RotateCcw, ChevronDown, Pause, Play, Square, MessagesSquare } from "lucide-react";
 import { askAgent, AgentResult, AgentSuggestion, AgentTraceStep, ChatTurn, ApiError } from "@/lib/api";
 import { SiriWave, SiriOrb, EdgeGlow, useMicLevel, VoiceState } from "./SiriVisual";
 import { RichText, TraceStrip } from "./RichText";
@@ -204,6 +204,9 @@ export default function AgentConsole() {
   const inputRef = useRef<HTMLInputElement>(null);
   const recogRef = useRef<any>(null);
   const historyRef = useRef<ChatTurn[]>([]);
+  // The Copilot conversation these turns are saved to, so the chat continues there.
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const conversationRef = useRef<string | null>(null);
   // Wraps every piece of assistant UI (voice HUD, conversation, push-to-talk pill,
   // dock, hint line) so a pointerdown anywhere else can be read as "dismiss".
   const rootRef = useRef<HTMLDivElement>(null);
@@ -595,7 +598,11 @@ export default function AgentConsole() {
         }
         let r: AgentResult;
         try {
-          r = await askAgent(q, historyRef.current.slice(-8), langRef.current.code.split("-")[0], pathRef.current, context);
+          r = await askAgent(q, historyRef.current.slice(-8), langRef.current.code.split("-")[0], pathRef.current, context, conversationRef.current);
+          if (r.conversation_id) {
+            conversationRef.current = r.conversation_id;
+            setConversationId(r.conversation_id);
+          }
         } catch (err: any) {
           if (err instanceof ApiError && err.isForbidden) {
             r = {
@@ -1270,6 +1277,8 @@ export default function AgentConsole() {
 
   const clearConversation = useCallback(() => {
     historyRef.current = [];
+    conversationRef.current = null;
+    setConversationId(null);
     setTurns([]);
     setReply(null);
     setSuggestions([]);
@@ -1586,6 +1595,17 @@ export default function AgentConsole() {
                   <span className="text-[11px] text-faint">investigative copilot</span>
                 </div>
                 <div className="flex items-center gap-1">
+                  {conversationId && (
+                    <button
+                      type="button"
+                      onClick={() => router.push(`/copilot?c=${conversationId}`)}
+                      title="Continue in Copilot"
+                      aria-label="Continue this conversation in Copilot"
+                      className="grid h-7 w-7 place-items-center rounded-full text-faint transition-colors hover:bg-black/[0.05] hover:text-ink"
+                    >
+                      <MessagesSquare className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={clearConversation}

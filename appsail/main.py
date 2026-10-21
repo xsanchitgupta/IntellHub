@@ -26,6 +26,7 @@ import agent_answers
 import copilot_engine
 import surveillance
 import fir_registry
+import investigation
 import insights
 import network_intel
 import news
@@ -161,6 +162,8 @@ def _on_fir_registered(bundle):
 
 
 fir_registry.configure(lambda: data_cache, _on_fir_registered, auth.current_identity)
+investigation.configure(lambda: data_cache, suggest=lambda case_id, k: analytics.recommend_suspects_for_case(
+    case_id, data_cache['firs'], data_cache.get('suspects'), data_cache.get('Accused'), data_cache, k=k))
 insights.configure(lambda: data_cache)
 news.configure(lambda: data_cache)
 network_intel.configure(lambda: knowledge_graph, lambda: data_cache)
@@ -168,7 +171,7 @@ temporal.configure(lambda: data_cache)
 trend_forecast.configure(lambda: data_cache)
 streams.configure(lambda: {c["camera_id"]: c.get("district") for c in surveillance.ensure(data_cache)["cameras"]}
                   if data_cache.get('_load_complete') else set())
-for _bp in (fir_registry.bp, insights.bp, network_intel.bp, news.bp, streams.bp, temporal.bp, trend_forecast.bp):
+for _bp in (fir_registry.bp, investigation.bp, insights.bp, network_intel.bp, news.bp, streams.bp, temporal.bp, trend_forecast.bp):
     app.register_blueprint(_bp)
 
 import pandas as pd
@@ -5046,8 +5049,21 @@ def route_agent():
     if request.method == 'OPTIONS':
         return '', 204
     data = _json_object()
-    return jsonify_safe(run_agent(data.get('query', ''), data.get('history'),
-                                  data.get('lang'), data.get('page'), data.get('context')))
+    query = str(data.get('query', '') or '')
+    result = run_agent(query, data.get('history'), data.get('lang'), data.get('page'), data.get('context'))
+    # A chat with the floating assistant is the same investigation as one on the Copilot
+    # page, so it is kept with the officer's saved conversations: the first turn opens a
+    # conversation tagged with the page it began on, and later turns carry its id.
+    actor = _actor()
+    if query.strip() and actor != "anonymous" and data.get('save', True) is not False:
+        cid = data.get('conversation_id')
+        conv = conversations.get(actor, cid) if isinstance(cid, str) and cid else None
+        if conv is None:
+            conv = conversations.create(actor, None, origin=data.get('page'))
+        conv = conversations.append(actor, conv["id"], query.strip(), result)
+        if conv:
+            result = dict(result, conversation_id=conv["id"])
+    return jsonify_safe(result)
 
 
 @app.route('/serverless/api/sync', methods=['POST', 'OPTIONS'])

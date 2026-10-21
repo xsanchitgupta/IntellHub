@@ -1565,6 +1565,114 @@ def tool_time_pattern(cache, district=None, crime_type=None, **_):
         "page": "/overview#time-pattern"}
 
 
+def _inv(cache):
+    """The investigation workbench, bound to this cache."""
+    import investigation as INV
+    if (INV._cache_getter() or {}).get("firs") is not cache.get("firs"):
+        INV.configure(lambda: cache)
+    return INV, INV.index()
+
+
+def _cites(cs, n=3):
+    return [c["id"] for c in (cs or [])[:n]]
+
+
+def tool_investigate(cache, mode="case_check", case_ref=None, person_ref=None, series_id=None, district=None,
+                     crime_type=None, station=None, act=None, section=None, date=None, **_):
+    """Investigation workbench: record checks, series, geographic profile, statutes, under-reporting, IO choice."""
+    import statutes as ST
+    INV, ix = _inv(cache)
+    idx = _index(cache)
+    if ix is None or idx is None:
+        return {"error": "corpus not loaded"}
+    d = (detect_district(district, idx) if district else None) or district
+    ct = (detect_crime(crime_type, idx) if crime_type else None) or crime_type
+    if mode == "case_check":
+        cid = resolve_case(case_ref, idx)
+        v = INV.case_view(ix, cid) if cid else None
+        if not v:
+            return {"error": f"No case matching '{case_ref}' exists in the corpus."}
+        return {"case_id": v["case_id"], "crime_type": v["crime_type"], "district": v["district"], "station": v["station"],
+                "incident": v["incident"], "status": v["status"],
+                "integrity": [{"code": f["code"], "severity": f["severity"], "detail": f["detail"], "cites": _cites(f["cites"])}
+                              for f in v["integrity"][:8]],
+                "questions_for_io": [q["question"] for q in v["questions"][:6]],
+                "hypotheses": [{"id": h["id"], "name": h["name"], "named_on_fir": h["named"], "inconsistent": h["inconsistent"],
+                                "consistent": h["consistent"],
+                                "for": [c["note"] for c in h["cells"].values() if c["verdict"] == "C"][:3],
+                                "against": [c["note"] for c in h["cells"].values() if c["verdict"] == "I"][:2]}
+                               for h in v["hypotheses"]["hypotheses"][:5]],
+                "hypothesis_method": v["hypotheses"]["method"], "excluded_factors": v["hypotheses"]["excluded_factors"],
+                "statute": {"code_in_force": v["statute"]["code_in_force"],
+                            "findings": [f["message"] for f in v["statute"]["findings"]]},
+                "series": [{"id": x["id"], "kind": x["kind"], "size": x["size"], "stations": x["stations"]} for x in v["series"]],
+                "page": f"/case?id={v['case_id']}"}
+    if mode == "integrity":
+        r = INV.integrity_summary(ix, district=d, limit=5)
+        return {"district": d, "firs_checked": r["firs_checked"], "firs_flagged": r["firs_flagged"],
+                "checks": [{"title": c["title"], "count": c["count"]} for c in r["checks"] if c["count"]],
+                "worst_firs": [{"case_id": c["case_id"], "flags": [f["title"] for f in c["flags"]]} for c in r["cases"]],
+                "page": "/investigate?tab=integrity"}
+    if mode == "series":
+        if series_id:
+            sd = INV.series_detail(ix, series_id)
+            if not sd:
+                return {"error": f"No series {series_id}."}
+            g = sd["geoprofile"]
+            return {"id": sd["id"], "kind": sd["kind"], "crime_type": sd["crime_type"], "size": sd["size"],
+                    "stations": sd["stations"], "districts": sd["districts"], "first": sd["first"], "last": sd["last"],
+                    "signature": sd["signature"], "person": sd["person"],
+                    "members": [{"case_id": m["case_id"], "date": m["date"], "station": m["station"]} for m in sd["members"][:8]],
+                    "shared_accused": sd["shared_accused"][:5],
+                    "geoprofile": {"applicable": g["applicable"], "peak": g.get("peak"), "search_area_km2": g.get("search_area_km2"),
+                                   "reason": g.get("reason")}, "page": f"/investigate?series={sd['id']}"}
+        r = INV.series_list(ix, kind=None, district=d, crime_type=ct, limit=6)
+        return {"filters": {"district": d, "crime_type": ct}, "total": r["total"], "by_kind": r["by_kind"],
+                "criteria": r["criteria"], "series": r["series"], "page": "/investigate?tab=series"}
+    if mode == "geo_profile":
+        if series_id:
+            sd = INV.series_detail(ix, series_id)
+            g = sd["geoprofile"] if sd else None
+            subject = series_id
+        else:
+            ref = str(person_ref or "").strip()
+            sid = resolve_suspect(ref, idx) if re.search(r"\d", ref) else None
+            if not sid:
+                offs = [i for k, i in idx.names.get(_norm_key(ref), []) if k == "offender"]
+                sid = offs[0] if len(offs) == 1 else None
+            t = INV.person_timeline(ix, sid) if sid else None
+            g = t["geoprofile"] if t else None
+            subject = sid
+        if not g:
+            return {"error": "Name a registry person (SUS-id) or a series id."}
+        return {"subject": subject, **{k: g.get(k) for k in ("applicable", "reason", "peak", "anchors", "search_area_km2",
+                                                              "buffer_km", "sites_used", "excluded", "note", "method")}}
+    if mode == "statute":
+        row = ST.lookup(act or "IPC", section)
+        return {"act": act or "IPC", "section": section, "crosswalk": row,
+                "code_in_force": ST.code_for(date) if date else None,
+                "findings": [f["message"] for f in ST.check([(act or "IPC", section)], date)] if date and section else [],
+                "commencement": ST.BNS_COMMENCEMENT.isoformat(), "source": ST.SOURCE}
+    if mode == "underreporting":
+        r = INV.underreporting(cache, ix)
+        rows = [x for x in r["districts"] if not d or x["district"] == d]
+        return {"model": r["model"], "state_cognizable_fir_rate": r["state_cognizable_fir_rate"],
+                "flagged": [{"district": x["district"], "z": x["z"], "flags": x["flags"]} for x in rows if x["flags"]][:8],
+                "district": rows[0] if d and rows else None, "note": r["note"], "page": "/investigate?tab=underreporting"}
+    if mode == "assign_io":
+        st = detect_station(station or "", idx) if station else None
+        units = cache.get("Unit")
+        uid = None
+        if st is not None and units is not None:
+            hit = units[units["UnitName"] == st]
+            uid = int(hit["UnitID"].iloc[0]) if len(hit) else None
+        r = INV.recommend_io(cache, ix, uid, ct)
+        return {"station": st, "crime_type": ct, "wanted_specialisation": r["wanted_specialisation"],
+                "officers": [{"name": o["name"], "kgid": o["kgid"], "rank": o["rank"], "score": o["score"], "reasons": o["reasons"]}
+                             for o in r["officers"]], "excluded_factors": r["excluded_factors"], "note": r["note"]}
+    return {"error": f"unknown mode {mode}"}
+
+
 # Tools that read one specific record; an answer built from them outranks a generic one.
 TIME_CUES = ("what time", "which time", "what hour", "which hour", "time of day", "times of day", "peak hour",
              "busiest hour", "busiest time", "busiest day", "which day", "what day of", "day of the week",
@@ -1646,6 +1754,12 @@ TOOLS = {
               "lang": {"type": "string", "enum": ["en", "kn"]}, "limit": {"type": "integer"}}, []),
     "annual_forecast": (tool_annual_forecast, "Annual FIR forecast for a district or statewide for a year (default next year), optionally one crime type: point, 80% range, change vs last year, the trend used, and the model's backtested accuracy against 'same as last year'. A year already in the data is answered as a backtest (predicted from earlier years only, with the actual). Use for 'how many crimes next year in Belagavi', 'forecast chain snatching 2027'.",
                         {"district": {"type": "string"}, "crime_type": {"type": "string"}, "year": {"type": "integer"}}, []),
+    "investigate": (tool_investigate, "Investigation workbench. mode=case_check (one FIR: record integrity and cross-source contradictions with cited record ids, questions for the IO, competing hypotheses ranked Heuer-style, IPC/BNS statute check, series it belongs to); integrity (statewide or district data-quality counts); series (cross-station crime series linked by MO or a shared accused; series_id for one); geo_profile (Rossmo search area for a person_ref or series_id); statute (IPC<->BNS equivalent for act+section, with date for the code in force); underreporting (districts recording far less than peers, Dial-112 calls not converted to FIRs); assign_io (rank officers for a station + crime_type).",
+                    {"mode": {"type": "string", "enum": ["case_check", "integrity", "series", "geo_profile", "statute", "underreporting", "assign_io"]},
+                     "case_ref": {"type": "string"}, "person_ref": {"type": "string"}, "series_id": {"type": "string"},
+                     "district": {"type": "string"}, "crime_type": {"type": "string"}, "station": {"type": "string"},
+                     "act": {"type": "string"}, "section": {"type": "string"}, "date": {"type": "string", "description": "YYYY-MM-DD of the offence"}},
+                    ["mode"]),
     "time_pattern": (tool_time_pattern, "When FIRs happen: hour-of-day x day-of-week counts for a district/crime type, the busiest cell, day, hour and 3-hour window, and whether the pattern is beyond chance (chi-square, Holm-corrected). Use for 'what time do chain snatchings happen', 'busiest day for burglary in Mysuru'.",
                      {"district": {"type": "string"}, "crime_type": {"type": "string"}}, []),
     "navigate": (None, "Move the officer's screen. Call at most once, only when showing a screen helps (e.g. after answering about a case, open it).",
@@ -1784,6 +1898,21 @@ def plan(text, idx, ents):
     if sight and (ents["suspects"] or ents["vehicles"]):
         return ([("sightings", {"person_ref": p}) for p in ents["suspects"][:2]]
                 + [("sightings", {"plate": v}) for v in ents["vehicles"][:2]])
+    statute = re.search(r"\b(ipc|bns)\s*(?:section\s*|s\.?\s*)?(\d+[a-z]?(?:\(\w+\))?)", low)
+    if statute and _cue(low, ("bns", "equivalent", "replaced", "new section", "corresponding", "convert", "which section")):
+        m = re.search(r"\b(20\d\d-\d\d-\d\d)\b", low)
+        return [("investigate", {"mode": "statute", "act": statute.group(1).upper(), "section": statute.group(2),
+                                 "date": m.group(1) if m else None})]
+    if ents["cases"] and _cue(low, ("inconsisten", "contradict", "integrity", "error", "wrong", "mistake", "what should i ask",
+                                    "what to ask", "questions", "who did", "who could", "who committed", "who else",
+                                    "hypothes", "suspect for", "suspects for", "lead", "section", "check this", "audit")):
+        return [("investigate", {"mode": "case_check", "case_ref": c}) for c in ents["cases"][:2]]
+    if ents["suspects"] and _cue(low, ("geographic profile", "rossmo", "where does", "where do", "anchor", "base of",
+                                       "where he lives", "where she lives", "hideout", "operates from", "home base")):
+        return [("investigate", {"mode": "geo_profile", "person_ref": ents["suspects"][0]})]
+    sid = re.search(r"\b((?:mo|of)-[0-9a-f]{8})\b", low)
+    if sid:
+        return [("investigate", {"mode": "series", "series_id": sid.group(1).upper()})]
     for c in ents["cases"][:3]:
         calls.append(("get_case", {"case_ref": c}))
     people = list(ents["suspects"])
@@ -1810,6 +1939,17 @@ def plan(text, idx, ents):
     filters = {k: ents[k] for k in ("district", "crime_type", "status", "year") if ents.get(k)}
     if ents.get("station"):
         filters["police_station"] = ents["station"]
+    if _cue(low, ("series", "serial", "same mo", "same modus", "linked cases", "pattern across", "across stations",
+                  "across districts", "cross-district", "cross district", "one offender")):
+        return [("investigate", {"mode": "series", "district": filters.get("district"), "crime_type": filters.get("crime_type")})]
+    if _cue(low, ("under-report", "underreport", "under report", "dark zone", "not registering", "not registered",
+                  "burking", "refus", "fir conversion", "converted to fir")):
+        return [("investigate", {"mode": "underreporting", "district": filters.get("district")})]
+    if _cue(low, ("data quality", "integrity", "inconsisten", "record errors", "data errors", "contradiction")):
+        return [("investigate", {"mode": "integrity", "district": filters.get("district")})]
+    if _cue(low, ("who should investigate", "which io", "assign", "recommend an io", "recommend io", "best officer for",
+                  "which officer should")) and (ents.get("station") or filters.get("crime_type")):
+        return [("investigate", {"mode": "assign_io", "station": ents.get("station"), "crime_type": filters.get("crime_type")})]
     if _cue(low, ("death", "fatal", "killed", "died")):
         filters["has_fatalities"] = True
 
@@ -2511,9 +2651,69 @@ def _say_time(r):
     return "\n".join(lines)
 
 
+def _say_investigate(mode, r):
+    if r.get("error"):
+        return r["error"]
+    if mode == "case_check":
+        lines = [f"**FIR {r['case_id']}** — {r['crime_type']}, {r['station']} ({r['status']}): "
+                 f"**{len(r['integrity'])} record issue(s)**."]
+        lines += [f"- {f['detail']} _(cites {', '.join(f['cites'])})_" for f in r["integrity"][:5]]
+        if r["questions_for_io"]:
+            lines.append("\n**Questions for the IO**")
+            lines += [f"{i}. {q}" for i, q in enumerate(r["questions_for_io"][:5], 1)]
+        if r["hypotheses"]:
+            lines.append("\n**Competing hypotheses** (fewest inconsistencies first; demographics never used)")
+            lines += [f"- {h['id']}{' (named)' if h['named_on_fir'] else ''}: {h['consistent']} consistent, "
+                      f"{h['inconsistent']} inconsistent" for h in r["hypotheses"][:4]]
+        return "\n".join(lines)
+    if mode == "integrity":
+        lines = [f"**{r['firs_flagged']:,} of {r['firs_checked']:,} FIRs** carry at least one record issue"
+                 + (f" in {r['district']}" if r.get("district") else "") + ":"]
+        lines += [f"- {c['title']}: {c['count']:,}" for c in sorted(r["checks"], key=lambda c: -c["count"])[:8]]
+        return "\n".join(lines)
+    if mode == "series":
+        if r.get("members"):
+            who = f" — {r['person']['id']}" if r.get("person") else ""
+            g = r.get("geoprofile") or {}
+            geo = (f" Geographic profile: 50% of the search surface lies in {g['search_area_km2']['50']} km² around "
+                   f"{g['peak']['lat']}, {g['peak']['lng']}." if g.get("applicable") else "")
+            return (f"**Series {r['id']}**{who}: {r['size']} {r['crime_type']} FIRs across {r['stations']} stations in "
+                    f"{', '.join(r['districts'])}, {r['first']} to {r['last']}.{geo}")
+        lines = [f"**{r['total']:,} candidate series** ({', '.join(f'{v} {k}' for k, v in r['by_kind'].items())}):"]
+        lines += [f"- {x['id']} — {x['size']} {x['crime_type']} FIRs, {x['stations']} stations, {len(x['districts'])} district(s), "
+                  f"{x['open']} open" for x in r["series"][:5]]
+        return "\n".join(lines)
+    if mode == "geo_profile":
+        if not r.get("applicable"):
+            return f"No geographic profile for {r.get('subject')}: {r.get('reason')}"
+        return (f"**Geographic profile of {r['subject']}** from {len(r['sites_used'])} sites: highest priority at "
+                f"{r['peak']['lat']}, {r['peak']['lng']}; 50% of the surface in {r['search_area_km2']['50']} km², 80% in "
+                f"{r['search_area_km2']['80']} km². {r['note']}")
+    if mode == "statute":
+        row = r.get("crosswalk")
+        if not row:
+            return f"{r['act']} {r['section']} is not in the cross-walk."
+        head = (f"**{r['act']} {r['section']}** corresponds to "
+                + (f"**BNS {row['bns']}**" if r["act"] == "IPC" else (f"**IPC {row['ipc']}**" if row.get("ipc") else "no IPC section"))
+                + f" — {row['subject']}. {row['change']}")
+        return head + ("\n" + "\n".join(r["findings"]) if r.get("findings") else "")
+    if mode == "underreporting":
+        lines = ["**Possible under-reporting**:"]
+        lines += [f"- {x['district']}: " + " ".join(x["flags"]) for x in r["flagged"][:6]]
+        return "\n".join(lines) + "\n" + r["note"]
+    if mode == "assign_io":
+        lines = [f"**Suggested IO** for {r.get('crime_type') or 'this case'}" + (f" at {r['station']}" if r.get("station") else "") + ":"]
+        lines += [f"- {o['rank']} {o['name']} ({o['kgid']}) — {', '.join(o['reasons'])}" for o in r["officers"][:4]]
+        return "\n".join(lines)
+    return ""
+
+
 def compose(calls_and_results):
     parts = []
     for (name, args), res in calls_and_results:
+        if name == "investigate":
+            parts.append(_say_investigate(args.get("mode", "case_check"), res))
+            continue
         if name == "situation":
             parts.append(_say_situation(res))
             continue
@@ -2649,7 +2849,8 @@ def _trace(name, args, res):
              "project_knowledge": "Read platform docs", "describe_platform": "Inspected live system",
              "situation": "Read live situation", "sightings": "Checked CCTV / ANPR network",
              "news": "Read public headlines", "annual_forecast": "Forecast the year",
-             "time_pattern": "Read the hour-by-weekday pattern", "navigate": "Moved screen"}.get(name, name)
+             "time_pattern": "Read the hour-by-weekday pattern", "investigate": "Ran the investigation workbench",
+             "navigate": "Moved screen"}.get(name, name)
     detail = ", ".join(f"{v}" for k, v in (args or {}).items() if v not in (None, "", False) and k not in ("limit", "sort_by", "order"))
     n = None
     if isinstance(res, dict):

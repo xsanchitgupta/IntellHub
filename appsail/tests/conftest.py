@@ -37,6 +37,7 @@ for _var, _name in (
     ("SURVEILLANCE_LOG_PATH", "surveillance_decisions.jsonl"),
     ("COPILOT_CONVERSATIONS_PATH", "copilot_conversations.json"),
     ("FIR_REGISTRY_PATH", "registered_firs.jsonl"),
+    ("FIR_PHOTO_DIR", "fir_photos"),
     ("CAMERA_STREAMS_PATH", "camera_streams.json"),
 ):
     os.environ[_var] = os.path.join(_SINK_DIR, _name)

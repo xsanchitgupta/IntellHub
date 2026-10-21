@@ -21,7 +21,10 @@ the same columns, ID conventions and code formats as ``convert_data.py``:
   later in the case's life and are not invented at registration.
 
 Every coded value is checked against its master table, so a registration can never
-carry a station, section or occupation the rest of the platform cannot resolve. An
+carry a station, section or occupation the rest of the platform cannot resolve. The penal
+code is checked against the date of the offence too: the BNS replaced the IPC on
+1 July 2024 (``statutes.py``), so an IPC section for a later offence — or a BNS
+section for an earlier one — is refused with the corresponding section named. An
 accused is linked to the offender registry only when the officer picks a registry
 person; a free-text accused is recorded on the FIR without a guessed identity.
 
@@ -66,6 +69,7 @@ from flask import Blueprint, jsonify, request, send_file
 
 import audit
 import karnataka
+import statutes
 
 bp = Blueprint("fir_registry", __name__)
 API = "/serverless/api"
@@ -92,6 +96,13 @@ SUGGESTED_SECTIONS = {
     "Narcotics Distribution": ("NDPS", "20(b)"), "Sandalwood Smuggling": ("Karnataka Forest Act", "86"),
     "Cyber Fraud (Jamtara style)": ("IT Act", "66C"), "Murder": ("IPC", "302"),
     "Assault": ("IPC", "323"), "Homicide": ("IPC", "304"),
+}
+# The same suggestion for an offence on or after 1 July 2024, when the BNS applies.
+# Snatching became an offence of its own (BNS 304), so chain snatching is not theft there.
+SUGGESTED_SECTIONS_BNS = {
+    ct: ("BNS", "304(2)") if ct == "Chain Snatching"
+    else (("BNS", statutes.CROSSWALK[sec][0]) if act == "IPC" and sec in statutes.CROSSWALK else (act, sec))
+    for ct, (act, sec) in SUGGESTED_SECTIONS.items()
 }
 # Base severity per crime type for the METADATA SEV score; the corpus books
 # Heinous when SEV > 75.
@@ -149,6 +160,15 @@ def masters():
     heads = _t(c, "CrimeHead")
     subs = _t(c, "CrimeSubHead")
     sections = _t(c, "Section")
+    section_rows = [{"act": r.ActCode, "section": str(r.SectionCode), "description": r.SectionDescription}
+                    for r in sections.itertuples() if int(getattr(r, "Active", 1)) == 1]
+    have = {(x["act"], x["section"]) for x in section_rows}
+    # The BNS successors of the IPC sections in the master, so an offence after 1 July
+    # 2024 can be booked under the code in force (statutes.py cites the source table).
+    for _ipc, (bns, subject, _change) in statutes.CROSSWALK.items():
+        if ("BNS", bns) not in have:
+            section_rows.append({"act": "BNS", "section": bns, "description": subject})
+            have.add(("BNS", bns))
     return {
         "districts": [{"id": int(r.DistrictID), "name": r.DistrictName}
                       for r in dist.sort_values("DistrictName").itertuples()],
@@ -162,11 +182,13 @@ def masters():
         "crime_types": [{"id": int(r.CrimeSubHeadID), "head_id": int(r.CrimeHeadID), "name": r.CrimeHeadName,
                          "suggested_section": dict(zip(("act", "section"), SUGGESTED_SECTIONS[r.CrimeHeadName]))
                          if r.CrimeHeadName in SUGGESTED_SECTIONS else None,
+                         "suggested_section_bns": dict(zip(("act", "section"), SUGGESTED_SECTIONS_BNS[r.CrimeHeadName]))
+                         if r.CrimeHeadName in SUGGESTED_SECTIONS_BNS else None,
                          "base_severity": BASE_SEVERITY.get(r.CrimeHeadName, 50)}
                         for r in subs.itertuples()],
         "acts": [{"code": r.ActCode, "name": r.ActDescription} for r in _t(c, "Act").itertuples()],
-        "sections": [{"act": r.ActCode, "section": str(r.SectionCode), "description": r.SectionDescription}
-                     for r in sections.itertuples() if int(getattr(r, "Active", 1)) == 1],
+        "sections": section_rows,
+        "bns_commencement": statutes.BNS_COMMENCEMENT.isoformat(),
         "courts": [{"id": int(r.CourtID), "name": r.CourtName} for r in _t(c, "Court").itertuples()],
         "officers": [{"id": int(r.EmployeeID), "name": r.FirstName, "kgid": r.KGID,
                       "rank": rank.get(r.RankID, ""), "unit_id": int(r.UnitID), "district_id": int(r.DistrictID)}
@@ -382,6 +404,7 @@ def validate(payload, now=None):
         head_id, crime_type = int(subs.loc[sub_id, "CrimeHeadID"]), subs.loc[sub_id, "CrimeHeadName"]
 
     known_sections = {(r.ActCode, str(r.SectionCode)) for r in _t(c, "Section").itertuples()}
+    known_sections |= {("BNS", bns) for bns, _s, _c in statutes.CROSSWALK.values()}
     sections = []
     for i, s in enumerate(p.get("sections") or []):
         pair = (str((s or {}).get("act", "")).strip(), str((s or {}).get("section", "")).strip())
@@ -414,6 +437,14 @@ def validate(payload, now=None):
             e[k] = "Cannot be in the future."
         if v and v.year < 1990:
             e[k] = "Date is implausibly old."
+    # The date of the offence decides the code: an FIR booked under the wrong one is a
+    # defect the charge-sheet inherits, so it is refused here with the right section named.
+    if t_from and sections and "sections" not in e:
+        wrong = statutes.check(sections, t_from)
+        if wrong:
+            e["sections"] = " ".join(
+                f["message"] + (f" Book it as {f['suggestion']['act']} {f['suggestion']['section']}." if f.get("suggestion") else "")
+                for f in wrong)
 
     lat, lon = p.get("latitude"), p.get("longitude")
     if lat in (None, "") or lon in (None, ""):

@@ -49,7 +49,7 @@ def _save():
 def _summary(c):
     last = next((m for m in reversed(c["messages"]) if m["role"] == "assistant"), None)
     return {"id": c["id"], "title": c["title"], "created": c["created"], "updated": c["updated"],
-            "pinned": c.get("pinned", False), "messages": len(c["messages"]),
+            "pinned": c.get("pinned", False), "messages": len(c["messages"]), "origin": c.get("origin"),
             "preview": (last["content"][:140] if last else "")}
 
 
@@ -64,10 +64,13 @@ def list_for(actor, q=None):
     return [_summary(c) for c in convs]
 
 
-def create(actor, title=None):
+def create(actor, title=None, origin=None):
+    """`origin`: the page a conversation began on when the floating assistant opened it
+    rather than the Copilot page, so the list can say where it came from."""
     now = time.time()
+    origin = str(origin)[:80] if origin and not str(origin).startswith("/copilot") else None
     c = {"id": uuid.uuid4().hex[:12], "title": (title or "New investigation").strip()[:80],
-         "created": now, "updated": now, "messages": [], "auto_title": not title}
+         "created": now, "updated": now, "messages": [], "auto_title": not title, "origin": origin}
     with _lock:
         mine = _load().setdefault(actor, {})
         mine[c["id"]] = c

@@ -42,6 +42,7 @@ import {
   Check,
   LoaderCircle,
   ArrowRight,
+  ScanSearch,
   type LucideIcon,
 } from "lucide-react";
 
@@ -51,17 +52,18 @@ type T = (k: string, d: string) => string;
 const NAV: { href: string; label: string; key: string; icon: LucideIcon }[] = [
   { href: "/overview", label: "Overview", key: "nav.overview", icon: LayoutDashboard },
   { href: "/cases", label: "Cases", key: "nav.cases", icon: Folders },
+  { href: "/investigate", label: "Investigate", key: "nav.investigate", icon: ScanSearch },
   { href: "/map", label: "Map", key: "nav.map", icon: MapIcon },
   { href: "/surveillance", label: "CCTV", key: "nav.cctv", icon: Cctv },
   { href: "/news", label: "Live News", key: "nav.news", icon: Newspaper },
   { href: "/network", label: "Network", key: "nav.network", icon: Network },
   { href: "/analytics", label: "Analytics", key: "nav.analytics", icon: Brain },
-  { href: "/intel", label: "Registry", key: "nav.registry", icon: Boxes },
   { href: "/copilot", label: "Copilot", key: "nav.copilot", icon: Sparkles },
 ];
 
 // Less-frequent destinations, kept one click away so the pill fits a laptop screen.
 const MORE: { href: string; label: string; key: string; icon: LucideIcon }[] = [
+  { href: "/intel", label: "Registry", key: "nav.registry", icon: Boxes },
   { href: "/officers", label: "Officers", key: "nav.officers", icon: Users },
   { href: "/lifecycle", label: "Lifecycle", key: "nav.lifecycle", icon: GitBranch },
   { href: "/pendency", label: "Pendency", key: "nav.pendency", icon: Timer },

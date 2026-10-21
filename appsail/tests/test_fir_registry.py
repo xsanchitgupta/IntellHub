@@ -54,7 +54,7 @@ def _station(c, name="Koramangala PS"):
 def _payload(c, **over):
     p = {
         "station_id": _station(c), "case_category_id": 1, "gravity_id": 2, "crime_type_id": 1,
-        "sections": [{"act": "IPC", "section": "379"}, {"act": "IPC", "section": "34"}],
+        "sections": [{"act": "BNS", "section": "304(2)"}, {"act": "BNS", "section": "3(5)"}],
         "officer_id": int(c["Employee"]["EmployeeID"].iloc[0]),
         "incident_from": "2026-10-17T20:15", "incident_to": "2026-10-17T20:20", "info_received": "2026-10-17T21:05",
         "place_of_occurrence": "80 Feet Road, near Sony signal",
@@ -83,7 +83,7 @@ def test_a_registration_writes_schema_true_rows(cache):
     assert list(acc["PersonID"]) == ["SUS-1001", ""]
     assert acc["AccusedName"].iloc[0] == main.data_cache["criminals"].set_index("criminal_id").loc["SUS-1001", "name"]
     asa = cache["ActSectionAssociation"][cache["ActSectionAssociation"]["CaseMasterID"] == cm["CaseMasterID"]]
-    assert list(asa["SectionID"]) == ["379", "34"] and list(asa["SectionOrderID"]) == [1, 2]
+    assert list(asa["SectionID"]) == ["304(2)", "3(5)"] and list(asa["SectionOrderID"]) == [1, 2]
     bundle = cache["_seen"][-1]
     assert bundle["links"] == [{"case_id": out["crime_no"], "suspect_id": "SUS-1001", "relationship": "Charged"}]
     assert os.path.exists(F.STORE_PATH) and F.stored_bundles()[-1]["crime_no"] == out["crime_no"]
@@ -149,6 +149,21 @@ def test_jurisdiction(cache):
     F.register(p, _ident("district", "Bengaluru Urban"), now=NOW)
 
 
+def test_the_code_in_force_on_the_offence_date_is_enforced(cache):
+    late = _payload(cache, sections=[{"act": "IPC", "section": "379"}, {"act": "IPC", "section": "34"}])
+    with pytest.raises(F.FIRError) as ex:
+        F.register(late, now=NOW)
+    msg = ex.value.errors["sections"]
+    assert "BNS 303(2)" in msg and "BNS 3(5)" in msg                       # the fix is named
+    early = _payload(cache, sections=[{"act": "IPC", "section": "379"}], incident_from="2024-05-10T20:15",
+                     incident_to="2024-05-10T20:20", info_received="2024-05-10T21:05")
+    assert F.register(early, now=NOW)["crime_no"]                            # IPC is right for May 2024
+    with pytest.raises(F.FIRError) as ex:
+        F.register(_payload(cache, incident_from="2024-05-10T20:15", incident_to="2024-05-10T20:20",
+                            info_received="2024-05-10T21:05"), now=NOW)     # BNS 304(2) did not exist yet
+    assert "BNS 304(2)" in ex.value.errors["sections"]
+
+
 def test_masters_cover_every_lookup(cache):
     m = F.masters()
     assert len(m["districts"]) == 31 and len(m["stations"]) == len(cache["Unit"])
@@ -156,6 +171,8 @@ def test_masters_cover_every_lookup(cache):
     assert all(t["suggested_section"] for t in m["crime_types"])
     names = {(s["act"], s["section"]) for s in m["sections"]}
     assert all((t["suggested_section"]["act"], t["suggested_section"]["section"]) in names for t in m["crime_types"])
+    assert all((t["suggested_section_bns"]["act"], t["suggested_section_bns"]["section"]) in names for t in m["crime_types"])
+    assert ("BNS", "303(2)") in names and ("BNS", "103(1)") in names and m["bns_commencement"] == "2024-07-01"
 
 
 # ------------------------------------------------------------------ photographs

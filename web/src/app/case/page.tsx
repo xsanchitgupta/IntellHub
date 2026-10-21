@@ -19,8 +19,12 @@ import {
   Gavel,
   Scale,
   Map as MapIcon,
+  ClipboardCheck,
+  Printer,
+  Layers,
 } from "lucide-react";
 import { getJSON } from "@/lib/api";
+import { HypothesisMatrix, IntegrityList, QuestionList, StatuteTable } from "@/components/Investigation";
 import { FirPhoto } from "@/components/PersonPhoto";
 import AccessRequired from "@/components/AccessRequired";
 
@@ -59,6 +63,14 @@ function CaseDossierContent() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [forbidden, setForbidden] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [inv, setInv] = useState<any>(null);
+
+  useEffect(() => {
+    if (!id) return;
+    // The investigation check is a second read: the dossier stands without it.
+    setInv(null);
+    getJSON(`/investigate/case/${id}`).then(setInv).catch(() => setInv(null));
+  }, [id]);
 
   useEffect(() => {
     if (!id) {
@@ -182,8 +194,49 @@ function CaseDossierContent() {
               <span>Case No: <strong className="font-mono text-ink">{case_details.CaseNo}</strong></span>
             </div>
           )}
+          <Link prefetch={false} href={`/case/brief?id=${encodeURIComponent(case_details.case_id)}`}
+                className="ml-auto inline-flex items-center gap-1.5 rounded-full border border-black/10 bg-white px-3.5 py-2 text-[12.5px] font-semibold text-ink shadow-sm hover:border-brand/40">
+            <Printer className="h-4 w-4 text-brand" /> Court-ready brief
+          </Link>
         </div>
       </div>
+
+      {/* Investigation check: record integrity, the IO's questions, competing hypotheses */}
+      {inv && (
+        <Panel>
+          <SectionTitle icon={ClipboardCheck} tone="crimson" title="Investigation check"
+                        sub="Computed from the records; every item cites the record it rests on" />
+          <div className="grid gap-6 lg:grid-cols-2">
+            <div>
+              <h3 className="mb-2 text-[12px] font-semibold uppercase tracking-wider text-faint">
+                Record issues and contradictions ({inv.integrity.length})
+              </h3>
+              <IntegrityList flags={inv.integrity} empty="The records for this FIR agree with each other." />
+            </div>
+            <div>
+              <h3 className="mb-2 text-[12px] font-semibold uppercase tracking-wider text-faint">Questions for the IO</h3>
+              <QuestionList questions={inv.questions} />
+              {inv.series?.length > 0 && (
+                <div className="mt-4 rounded-xl border border-azure/20 bg-azure/[0.05] p-3">
+                  <p className="flex items-center gap-1.5 text-[12px] font-semibold text-azure"><Layers className="h-3.5 w-3.5" /> Part of a cross-station series</p>
+                  <div className="mt-1.5 flex flex-wrap gap-2">
+                    {inv.series.map((sr: any) => (
+                      <Link key={sr.id} prefetch={false} href={`/investigate?series=${sr.id}`}
+                            className="rounded-lg border border-azure/25 bg-white px-2 py-1 text-[12px] text-ink hover:border-azure/50">
+                        <b className="font-mono">{sr.id}</b> · {sr.size} FIRs · {sr.stations} stations · {sr.kind === "mo" ? "same MO" : "same accused"}
+                      </Link>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="mt-6">
+            <h3 className="mb-2 text-[12px] font-semibold uppercase tracking-wider text-faint">Competing hypotheses — who could have done this</h3>
+            <HypothesisMatrix hyp={inv.hypotheses} />
+          </div>
+        </Panel>
+      )}
 
       {/* Narrative + Location */}
       <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
@@ -650,23 +703,15 @@ function CaseDossierContent() {
 
         {/* Statutory Provisions */}
         <Panel>
-          <SectionTitle icon={Scale} tone="azure" title="Statutory Provisions" />
-          <div className="space-y-4">
+          <SectionTitle icon={Scale} tone="azure" title="Statutory Provisions" sub="The sections this FIR is booked under, against the code in force" />
+          {inv?.statute ? (
+            <StatuteTable statute={inv.statute} />
+          ) : (
             <div className="rounded-xl border border-black/[0.06] bg-black/[0.02] p-4">
-              <p className="text-[11.5px] font-semibold uppercase tracking-wider text-faint mb-2">Filed Acts & Sections</p>
-              <p className="text-[14px] font-bold text-brand leading-relaxed">{case_details.ipc_bns_sections || "None filed"}</p>
+              <p className="mb-2 text-[11.5px] font-semibold uppercase tracking-wider text-faint">Filed Acts & Sections</p>
+              <p className="text-[14px] font-bold leading-relaxed text-brand">{case_details.ipc_bns_sections || "None filed"}</p>
             </div>
-            
-            <div className="rounded-xl border border-black/[0.06] bg-black/[0.02] p-4 space-y-3">
-              <p className="text-[11.5px] font-semibold uppercase tracking-wider text-faint">Statutory Definitions & Lookup</p>
-              <div className="text-[12.5px] space-y-2 text-muted leading-relaxed">
-                <p>• <span className="font-semibold text-ink">IPC 379:</span> Punishment for theft (imprisonment up to 3 years, or fine, or both).</p>
-                <p>• <span className="font-semibold text-ink">IPC 323:</span> Punishment for voluntarily causing hurt (imprisonment up to 1 year, or fine of ₹1,000).</p>
-                <p>• <span className="font-semibold text-ink">IT Act 66C:</span> Identity theft penalty (imprisonment up to 3 years and fine up to ₹1 lakh).</p>
-                <p>• <span className="font-semibold text-ink">IT Act 66D:</span> Penalty for cheating by personation using a computer resource.</p>
-              </div>
-            </div>
-          </div>
+          )}
         </Panel>
       </div>
     </div>

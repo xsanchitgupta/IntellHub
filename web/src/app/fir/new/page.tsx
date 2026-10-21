@@ -38,9 +38,16 @@ type Masters = {
   case_categories: Opt[];
   gravity: Opt[];
   crime_heads: Opt[];
-  crime_types: (Opt & { head_id: number; suggested_section: { act: string; section: string } | null; base_severity: number })[];
+  crime_types: (Opt & {
+    head_id: number;
+    suggested_section: { act: string; section: string } | null;
+    suggested_section_bns: { act: string; section: string } | null;
+    base_severity: number;
+  })[];
   acts: { code: string; name: string }[];
   sections: { act: string; section: string; description: string }[];
+  /** The day the BNS replaced the IPC; the date of the offence decides which applies. */
+  bns_commencement: string;
   courts: Opt[];
   officers: (Opt & { kgid: string; rank: string; unit_id: number; district_id: number })[];
   occupations: Opt[];
@@ -63,6 +70,7 @@ type Person = {
   /** Uploaded already; only photo_id is sent with the registration. */
   photo?: PhotoValue | null;
 };
+type IO = { officer_id: number; name: string; rank: string; kgid: string; open_cases: number; score: number; reasons: string[] };
 type Hit = { person_id: string; name: string; alias?: string; risk_level?: string; rowdy_sheeter: boolean; active_warrant: boolean };
 
 const STEPS = ["Incident & station", "Offence & sections", "People", "Facts & review"];
@@ -163,16 +171,48 @@ export default function NewFIRPage() {
   }, [stations, f.station_id]);
 
   const crimeType = m?.crime_types.find((c) => String(c.id) === f.crime_type_id);
-  // Suggest the corpus's section for the crime type, and the gravity its severity implies.
+  // The penal code in force on the day of the offence: IPC before the BNS commenced, BNS after.
+  const code = m && (f.incident_from || localNow()).slice(0, 10) < m.bns_commencement ? "IPC" : "BNS";
+  const suggested = crimeType && (code === "BNS" ? crimeType.suggested_section_bns : crimeType.suggested_section);
+  const other = crimeType && (code === "BNS" ? crimeType.suggested_section : crimeType.suggested_section_bns);
+  const wrongCode = sections.filter((x) => (x.act === "IPC" || x.act === "BNS") && x.act !== code);
+  // Suggest the section for the crime type under the code in force, and the gravity its severity implies.
   useEffect(() => {
     if (!crimeType) return;
-    if (crimeType.suggested_section && !sections.length) setSections([crimeType.suggested_section]);
+    const onlyOther = sections.length === 1 && other && sections[0].act === other.act && sections[0].section === other.section;
+    if (suggested && (!sections.length || onlyOther)) setSections([suggested]);
     if (!f.gravity_id && m) {
       const heinous = crimeType.base_severity > 75;
       const g = m.gravity.find((x) => x.name === (heinous ? "Heinous" : "Non-Heinous"));
       if (g) setF((s) => ({ ...s, gravity_id: String(g.id) }));
     }
-  }, [crimeType]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [crimeType, code]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A shortlist of investigating officers for this station and crime type, with the reasons.
+  const [ios, setIos] = useState<IO[]>([]);
+  useEffect(() => {
+    if (!f.station_id) {
+      setIos([]);
+      return;
+    }
+    const q = new URLSearchParams({ station_id: f.station_id, ...(crimeType && { crime_type: crimeType.name }) });
+    getJSON<{ officers: IO[] }>(`/investigate/recommend-io?${q}`)
+      .then((r) => setIos(r.officers.slice(0, 3)))
+      .catch(() => setIos([]));
+  }, [f.station_id, crimeType]);
+  const ioChips = ios.length > 0 && (
+    <div className="mt-2 flex flex-wrap gap-1.5">
+      {ios.map((o) => (
+        <button key={o.officer_id} type="button" title={o.reasons.join(" · ")}
+                onClick={() => setF((s) => ({ ...s, officer_id: String(o.officer_id) }))}
+                className={`rounded-lg border px-2 py-1 text-left text-[11px] transition-colors ${
+                  f.officer_id === String(o.officer_id) ? "border-brand/50 bg-brand/10 text-ink" : "border-black/10 text-muted hover:border-brand/40 hover:text-ink"
+                }`}>
+          <b className="text-ink">{o.name}</b> · {o.rank} · {o.open_cases} open
+        </button>
+      ))}
+    </div>
+  );
 
   useEffect(() => {
     if (q.trim().length < 2) {
@@ -429,8 +469,10 @@ export default function NewFIRPage() {
                 <Field k="case_category_id" errors={errors} title="Case category">
                   {sel("case_category_id", opts(m.case_categories))}
                 </Field>
-                <Field k="officer_id" errors={errors} title="Investigating officer" hint="Officers of this station are listed first">
+                <Field k="officer_id" errors={errors} title="Investigating officer"
+                       hint={ios.length ? "Suggested by specialisation, posting, closure rate and open cases — hover for the reasons" : "Officers of this station are listed first"}>
                   {sel("officer_id", officers.map((o) => ({ v: String(o.id), l: `${o.name} · ${o.rank} · ${o.kgid}` })))}
+                  {ioChips}
                 </Field>
                 <Field k="incident_from" errors={errors} title="Incident from">
                   <input type="datetime-local" max={localNow()} value={f.incident_from} onChange={set("incident_from")} className={input} />
@@ -480,8 +522,15 @@ export default function NewFIRPage() {
                   {sel("gravity_id", opts(m.gravity))}
                 </Field>
               </div>
-              <Field k="sections" errors={errors} title="Acts & sections">
+              <Field k="sections" errors={errors} title="Acts & sections"
+                     hint={`Offence on ${(f.incident_from || localNow()).slice(0, 10)}: the ${code === "BNS" ? "Bharatiya Nyaya Sanhita" : "Indian Penal Code"} applies`}>
                 <div className="space-y-2">
+                  {wrongCode.length > 0 && (
+                    <p className="rounded-lg border border-brand/25 bg-brand/[0.06] px-3 py-2 text-[12px] text-ink">
+                      {wrongCode.map((x) => `${x.act} ${x.section}`).join(", ")} {wrongCode.length > 1 ? "are" : "is"} not the code in force on the date of the offence — the
+                      registration will be refused. {code === "BNS" ? `The BNS commenced on ${m.bns_commencement}.` : `The BNS only applies from ${m.bns_commencement}.`}
+                    </p>
+                  )}
                   {sections.map((s, i) => (
                     <div key={i} className="flex items-center gap-2">
                       <select

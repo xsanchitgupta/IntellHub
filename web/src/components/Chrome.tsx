@@ -27,15 +27,16 @@ export default function Chrome({ children }: { children: React.ReactNode }) {
   const onCopilot = pathname.startsWith("/copilot");
   return (
     <>
-      <FluidNav />
+      {/* A printed page (the case brief) is the record alone, without the command bar. */}
+      <div className="print:hidden"><FluidNav /></div>
       <main
         id="main-content"
         tabIndex={-1}
-        className="relative z-10 mx-auto w-full max-w-[1500px] px-5 pt-28 pb-40 md:px-8 focus:outline-none"
+        className="relative z-10 mx-auto w-full max-w-[1500px] px-5 pt-28 pb-40 md:px-8 focus:outline-none print:p-0"
       >
         {children}
       </main>
-      {!onCopilot && <AgentConsole />}
+      {!onCopilot && <div className="print:hidden"><AgentConsole /></div>}
     </>
   );
 }

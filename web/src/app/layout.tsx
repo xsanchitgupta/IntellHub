@@ -41,9 +41,9 @@ export default function RootLayout({
     <html lang="en">
       <body className={`${jakarta.variable} ${spaceGrotesk.variable} ${kannada.variable} antialiased`}>
         {/* Fixed command-room backdrop */}
-        <div className="fx-field" />
-        <div className="fx-grid" />
-        <div className="fx-grain" />
+        <div className="fx-field print:hidden" />
+        <div className="fx-grid print:hidden" />
+        <div className="fx-grain print:hidden" />
 
         {/* First focusable element on the page: a keyboard user should not have to
             tab through the whole command bar to reach what they came for. */}

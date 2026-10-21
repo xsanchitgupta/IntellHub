@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { getJSON } from "@/lib/api";
 import AccessRequired from "@/components/AccessRequired";
+import { Cites, GeoProfileView, SourceTimeline } from "@/components/Investigation";
 
 const RISK_STYLES: Record<string, string> = {
   Critical: "border-crimson/30 bg-crimson/10 text-crimson",
@@ -33,6 +34,14 @@ function SuspectDossierContent() {
   const [dossier, setDossier] = useState<any>(null);
   const [forbidden, setForbidden] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [fused, setFused] = useState<any>(null);
+
+  useEffect(() => {
+    if (!id) return;
+    // One person across every register; the dossier stands without it.
+    setFused(null);
+    getJSON(`/investigate/person/${id}/timeline`).then(setFused).catch(() => setFused(null));
+  }, [id]);
 
   useEffect(() => {
     if (!id) {
@@ -477,6 +486,43 @@ function SuspectDossierContent() {
           </div>
         </div>
       </div>
+      {fused && (
+        <div className="bezel">
+          <div className="bezel-core p-6">
+            <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
+              <div>
+                <h2 className="text-[15px] font-bold text-ink">Across every register</h2>
+                <p className="text-[12px] text-faint">
+                  {fused.summary.firs} FIRs at {fused.summary.stations} stations in {fused.summary.districts.length} districts ·
+                  sources: {fused.sources.join(", ")}
+                </p>
+              </div>
+            </div>
+            {fused.identity_conflicts.length > 0 && (
+              <div className="mb-5 space-y-2">
+                {fused.identity_conflicts.map((c: any, i: number) => (
+                  <div key={i} className="rounded-xl border border-crimson/25 bg-crimson/[0.05] p-3">
+                    <p className="text-[12.5px] font-semibold text-crimson">
+                      {c.code === "shared_fingerprint" ? "Identity conflict: one fingerprint, two records" : "Identity conflict: ages that are not one person's"}
+                    </p>
+                    <p className="mt-0.5 text-[12.5px] text-ink">{c.detail}</p>
+                    <div className="mt-1.5"><Cites cites={c.cites} /></div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="grid gap-6 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
+              <div className="max-h-[520px] overflow-y-auto pr-1">
+                <SourceTimeline events={fused.events} />
+              </div>
+              <div>
+                <h3 className="mb-2 text-[12px] font-semibold uppercase tracking-wider text-faint">Geographic profile</h3>
+                <GeoProfileView g={fused.geoprofile} />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

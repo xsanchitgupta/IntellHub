@@ -56,6 +56,7 @@ const KN: Record<string, string> = {
   // navigation
   "nav.overview": "ಅವಲೋಕನ",
   "nav.cases": "ಪ್ರಕರಣಗಳು",
+  "nav.investigate": "ತನಿಖೆ",
   "nav.map": "ನಕ್ಷೆ",
   "nav.network": "ಜಾಲ",
   "nav.analytics": "ವಿಶ್ಲೇಷಣೆ",
@@ -239,6 +240,7 @@ const DICTIONARIES: Record<Lang, Record<string, string>> = { en: {}, kn: KN };
 const EN_DEFAULTS: Record<string, string> = {
   "nav.overview": "Overview",
   "nav.cases": "Cases",
+  "nav.investigate": "Investigate",
   "nav.map": "Map",
   "nav.network": "Network",
   "nav.analytics": "Analytics",
