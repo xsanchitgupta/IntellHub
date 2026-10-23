@@ -102,6 +102,8 @@ def _t(c, name):
 
 def _clean(v):
     """JSON-safe: numpy scalars to Python, NaN/NaT to None, recursively."""
+    if isinstance(v, Flag):
+        return _clean(v.as_dict())
     if isinstance(v, dict):
         return {k: _clean(x) for k, x in v.items()}
     if isinstance(v, (list, tuple)):
@@ -331,10 +333,45 @@ QUESTIONS = {
 }
 
 
-def _flag(code, detail, cites, **q):
-    sev, title = CHECKS[code]
-    return {"code": code, "severity": sev, "title": title, "detail": detail, "cites": cites,
-            "question": QUESTIONS[code].format(**q)}
+class Flag:
+    """One finding. Read like the dict it is served as (flag["code"], flag["cites"]).
+
+    About 17,000 are held for the day, and as dicts — each with a list of citation
+    dicts — they were the largest thing the app kept: 37 MB, in a 512 MB container that
+    is replaced when it runs close to its limit. Slots and citation tuples hold the same
+    content in a fraction of it; as_dict() is what leaves the module."""
+    __slots__ = ("code", "detail", "_cites", "question", "suggestion")
+
+    def __init__(self, code, detail, cites, question, suggestion=None):
+        self.code, self.detail, self.question, self.suggestion = code, detail, question, suggestion
+        self._cites = tuple((c["kind"], c["id"], c["label"]) for c in cites)
+
+    severity = property(lambda self: CHECKS[self.code][0])
+    title = property(lambda self: CHECKS[self.code][1])
+    cites = property(lambda self: [{"kind": k, "id": i, "label": lbl} for k, i, lbl in self._cites])
+
+    def __getitem__(self, key):
+        if key not in ("code", "severity", "title", "detail", "cites", "question", "suggestion"):
+            raise KeyError(key)
+        return getattr(self, key)
+
+    def get(self, key, default=None):
+        try:
+            v = self[key]
+        except KeyError:
+            return default
+        return default if v is None else v
+
+    def as_dict(self):
+        out = {"code": self.code, "severity": self.severity, "title": self.title, "detail": self.detail,
+               "cites": self.cites, "question": self.question}
+        if self.suggestion is not None:
+            out["suggestion"] = self.suggestion
+        return out
+
+
+def _flag(code, detail, cites, suggestion=None, **q):
+    return Flag(code, detail, cites, QUESTIONS[code].format(**q), suggestion)
 
 
 def integrity_flags(ix, on=None):
@@ -419,7 +456,7 @@ def _integrity_flags(ix, on):
                                        [_fir(r.case_id), {"kind": "arrest", "id": a["id"], "label": f"Arrest {a['id']}"}],
                                        ref=a["id"], date=_d(a["date"]), when=_d(r.IncidentFromDate)))
         for s in statutes.check(ix["sections"].get(cmid, ()), r.IncidentFromDate):
-            out[cmid].append(_flag(s["code"], s["message"], [_fir(r.case_id)], message=s["message"]) | {"suggestion": s["suggestion"]})
+            out[cmid].append(_flag(s["code"], s["message"], [_fir(r.case_id)], suggestion=s["suggestion"], message=s["message"]))
         for v in ix["vehicles"].get(r.case_id, ()):
             if pd.notna(v["theft"]) and pd.notna(r.IncidentFromDate) and v["theft"] > r.IncidentFromDate.normalize():
                 days = int((v["theft"] - r.IncidentFromDate.normalize()).days)
@@ -923,7 +960,7 @@ def case_view(ix, case_ref):
     return {
         "case_id": r["case_id"], "district": r["district"], "station": r["police_station"], "crime_type": r["crime_type"],
         "status": r["status"], "incident": _d(r["IncidentFromDate"]),
-        "integrity": flags, "questions": questions[:12], "hypotheses": hyp, "series": series,
+        "integrity": [f.as_dict() for f in flags], "questions": questions[:12], "hypotheses": hyp, "series": series,
         "statute": {"code_in_force": statutes.code_for(r["IncidentFromDate"]),
                     "commencement": statutes.BNS_COMMENCEMENT.isoformat(),
                     "sections": [{"act": a, "section": s, "crosswalk": statutes.lookup(a, s)} for a, s in secs],
