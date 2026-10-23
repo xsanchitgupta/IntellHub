@@ -427,7 +427,13 @@ export async function demoLogin(persona: string, district?: string | null): Prom
 }
 
 
-export async function getJSON<T = any>(path: string): Promise<T> {
+/** GET is safe to repeat, so a read that lands while the API container restarts (about
+ *  half a minute) waits it out instead of showing the page as unavailable. */
+export function getJSON<T = any>(path: string): Promise<T> {
+  return withRetry(() => getJSONOnce<T>(path), [3000, 6000, 10000, 15000]);
+}
+
+async function getJSONOnce<T>(path: string): Promise<T> {
   const res = await fetch(api(path), { headers: authHeaders() });
   if (!res.ok) throw new ApiError(res.status);
 
