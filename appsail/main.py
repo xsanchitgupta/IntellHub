@@ -2204,6 +2204,11 @@ def route_health():
     # recycled container — everyone's token silently invalidated — has to be
     # inferred from the outside, which is how it went unnoticed.
     payload["uptime_seconds"] = int(time.time() - _PROCESS_STARTED)
+    # And what usually causes one: the container is killed at its memory limit, so the
+    # resident size, its high-water mark and the cgroup's own count are worth seeing.
+    mem = _memory_mb()
+    if mem:
+        payload["memory_mb"] = mem
     payload["auth_secret_configured"] = auth.AUTH_SECRET_CONFIGURED
     if not auth.AUTH_SECRET_CONFIGURED:
         payload.setdefault("warnings", []).append(
@@ -5191,6 +5196,32 @@ def _warmup():
     # After the corpus, not before: retention touches only the runtime logs, and a
     # failure here must never delay the service becoming ready.
     _enforce_retention_on_boot()
+
+
+def _memory_mb():
+    """Resident and peak memory of this process, and the cgroup's usage and limit, in
+    MB. Linux only; empty elsewhere."""
+    out = {}
+    try:
+        with open("/proc/self/status") as fh:
+            for line in fh:
+                if line.startswith(("VmRSS:", "VmHWM:")):
+                    out["rss" if line.startswith("VmRSS") else "rss_peak"] = int(line.split()[1]) // 1024
+    except OSError:
+        return out
+    for key, paths in (("cgroup_used", ("/sys/fs/cgroup/memory.current", "/sys/fs/cgroup/memory/memory.usage_in_bytes")),
+                       ("cgroup_peak", ("/sys/fs/cgroup/memory.peak", "/sys/fs/cgroup/memory/memory.max_usage_in_bytes")),
+                       ("cgroup_limit", ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"))):
+        for path in paths:
+            try:
+                with open(path) as fh:
+                    v = fh.read().strip()
+            except OSError:
+                continue
+            if v.isdigit() and int(v) < 2 ** 50:
+                out[key] = int(v) // 2 ** 20
+            break
+    return out
 
 
 def _trim_heap():
