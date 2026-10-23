@@ -125,14 +125,63 @@ const normaliser = `<script>(function(){try{var p=location.pathname;` +
  * and React never starts, so nothing inside the app — not even its error boundary —
  * can recover: the officer is left with a dead page. This listener is plain script,
  * registered before any bundle loads, and capture-phase because resource errors do
- * not bubble. The timestamp (shared with the error boundary) allows one reload per
- * 30 s, so a file that is genuinely missing cannot become a reload loop.
+ * not bubble. At most three reloads a minute, so a file that is genuinely missing
+ * cannot become a reload loop; each reload comes back under the service worker below,
+ * which by then holds every file that did arrive.
  */
 const recovery = `<script>(function(){window.addEventListener("error",function(e){` +
   `var t=e.target,u=t&&(t.src||t.href)||"";if(!t||(t.tagName!=="SCRIPT"&&t.tagName!=="LINK")||` +
-  `u.indexOf("/_next/")<0)return;try{var k="ksp.chunk-reload",l=+sessionStorage.getItem(k)||0;` +
-  `if(Date.now()-l<30000)return;sessionStorage.setItem(k,String(Date.now()));}catch(x){return;}` +
-  `setTimeout(function(){location.reload();},1500);},true);})();</script>`;
+  `u.indexOf("/_next/")<0||window.__kspReloading)return;try{var k="ksp.reloads",n=Date.now(),` +
+  `r=JSON.parse(sessionStorage.getItem(k)||"[]").filter(function(x){return n-x<60000;});` +
+  `if(r.length>=3)return;r.push(n);sessionStorage.setItem(k,JSON.stringify(r));}catch(x){return;}` +
+  `window.__kspReloading=1;setTimeout(function(){location.reload();},1500);},true);})();</script>`;
+
+/**
+ * A service worker for the app's own static files, because the host rate-limits bursts.
+ *
+ * Measured after a three-minute cool-down: one cold load of /overview is 46 requests
+ * and the 11th already comes back 429. A page reload repeats the same burst. So the
+ * worker sends at most six /_next/static requests at a time, retries a 429 with
+ * back-off, and keeps each file once it has it — the names are content hashes, so a
+ * file never changes and a new build simply asks for new names. It touches nothing
+ * else: API calls, pages and media go to the network as before.
+ *
+ * It cannot help the load that installs it (a worker controls pages opened after it),
+ * which is what the one-time reload above is for: the reload comes back under it.
+ */
+const serviceWorker = `const CACHE = "ksp-static-v1";
+const MAX = 6;
+let active = 0;
+const queue = [];
+function gate(run) {
+  return new Promise((resolve, reject) => {
+    const go = () => { active++; run().then(resolve, reject).finally(() => { active--; if (queue.length) queue.shift()(); }); };
+    active < MAX ? go() : queue.push(go);
+  });
+}
+async function load(req) {
+  const cache = await caches.open(CACHE);
+  const hit = await cache.match(req);
+  if (hit) return hit;
+  let res;
+  for (let i = 0; i < 8; i++) {
+    res = await gate(() => fetch(req));
+    if (res.status !== 429) break;
+    await new Promise((r) => setTimeout(r, Math.min(300 * 2 ** i, 2000)));
+  }
+  if (res.ok) cache.put(req, res.clone()).catch(() => {});
+  return res;
+}
+self.addEventListener("install", () => self.skipWaiting());
+self.addEventListener("activate", (e) => e.waitUntil(self.clients.claim()));
+self.addEventListener("fetch", (e) => {
+  const url = new URL(e.request.url);
+  if (e.request.method !== "GET" || url.origin !== self.location.origin || !url.pathname.includes("/_next/static/")) return;
+  e.respondWith(load(e.request).catch(() => fetch(e.request)));
+});
+`;
+writeFileSync(`${OUT}/sw.js`, serviceWorker, "utf8");
+const register = `<script>if("serviceWorker"in navigator){navigator.serviceWorker.register("/app/sw.js",{scope:"/app/"}).catch(function(){});}</script>`;
 
 let injected = 0;
 for (const file of globSync(`${OUT}/**/*.html`)) {
@@ -141,9 +190,9 @@ for (const file of globSync(`${OUT}/**/*.html`)) {
   if (html.includes("/index.html\"")) continue;
   const at = html.indexOf("<head>");
   if (at === -1) continue;
-  writeFileSync(file, html.slice(0, at + 6) + normaliser + recovery + html.slice(at + 6), "utf8");
+  writeFileSync(file, html.slice(0, at + 6) + normaliser + recovery + register + html.slice(at + 6), "utf8");
   injected++;
 }
 
 console.log(`postbuild: client-package.json copied, 404.html written as a path ` +
-            `resolver, URL normaliser and load-failure reload injected into ${injected} page(s)`);
+            `resolver, sw.js written; URL normaliser, load-failure reload and worker registration injected into ${injected} page(s)`);
