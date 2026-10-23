@@ -4,7 +4,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
 import { Mic, MicOff, Send, X, ArrowRight, Volume2, VolumeX, RotateCcw, ChevronDown, Pause, Play, Square, MessagesSquare } from "lucide-react";
-import { askAgent, AgentResult, AgentSuggestion, AgentTraceStep, ChatTurn, ApiError } from "@/lib/api";
+import { askAgent, AgentResult, AgentSuggestion, AgentTraceStep, ChatTurn, ApiError, RESTARTING_REPLY } from "@/lib/api";
 import { SiriWave, SiriOrb, EdgeGlow, useMicLevel, VoiceState } from "./SiriVisual";
 import { RichText, TraceStrip } from "./RichText";
 
@@ -611,12 +611,8 @@ export default function AgentConsole() {
               params: {},
             };
           } else {
-            // Client-side intelligent fallback if backend is offline
-            r = {
-              action: "answer",
-              reply: "Could not reach the intelligence core. Executing local navigation.",
-              params: {},
-            };
+            // askAgent has already retried; say what is happening rather than sounding broken.
+            r = { action: "answer", reply: RESTARTING_REPLY, params: {} };
           }
         }
 

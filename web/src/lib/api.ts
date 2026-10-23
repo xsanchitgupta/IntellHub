@@ -97,6 +97,30 @@ export interface AgentContext {
   suspect_id?: string;
 }
 
+/** A failure worth trying again: no response, a gateway timeout, a rate limit, a 5xx,
+ *  or a body that was not JSON (the platform's own error page while the API restarts). */
+export function isTransient(e: unknown) {
+  if (e instanceof ApiError) return e.status === 408 || e.status === 429 || e.status >= 500;
+  return e instanceof TypeError || e instanceof SyntaxError;
+}
+
+/** Run fn, and run it again after 4 s and 8 s if it fails transiently. The API's container
+ *  is replaced now and then, and is back within about half a minute; a question asked in
+ *  that window should be answered late, not lost. */
+export async function withRetry<T>(fn: () => Promise<T>, waits = [4000, 8000]): Promise<T> {
+  for (let i = 0; ; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      if (i >= waits.length || !isTransient(e)) throw e;
+      await new Promise((r) => setTimeout(r, waits[i]));
+    }
+  }
+}
+
+export const RESTARTING_REPLY =
+  "The server is restarting — that takes about half a minute. Ask again shortly; nothing has been lost.";
+
 export async function askAgent(
   query: string,
   history: ChatTurn[] = [],
@@ -106,12 +130,14 @@ export async function askAgent(
   conversationId?: string | null
 ): Promise<AgentResult> {
   // Every exchange is saved to the officer's Copilot history; the id keeps one chat in one thread.
-  const res = await apiFetch("/agent", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ query, history, lang, page, context, conversation_id: conversationId ?? undefined }),
+  return withRetry(async () => {
+    const res = await apiFetch("/agent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query, history, lang, page, context, conversation_id: conversationId ?? undefined }),
+    });
+    return res.json();
   });
-  return res.json();
 }
 
 /* ------------------------------------------------------------------ auth

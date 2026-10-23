@@ -8,7 +8,7 @@ import {
   Plus, Search, Pin, PinOff, Trash2, Pencil, Check, X, Send, Mic, Copy, CheckCheck, ArrowRight, Lock,
   FolderSearch, Users, MapPinned, Cctv, Brain, PanelLeftClose, PanelLeftOpen, ExternalLink, AlertTriangle,
 } from "lucide-react";
-import { apiFetch, getJSON, ApiError } from "@/lib/api";
+import { apiFetch, getJSON, ApiError, withRetry, RESTARTING_REPLY } from "@/lib/api";
 import { RichText, TraceStrip } from "@/components/RichText";
 import { SiriOrb } from "@/components/SiriVisual";
 
@@ -197,15 +197,17 @@ function CopilotInner() {
         router.replace(`/copilot?c=${cid}`);
       }
       setMsgs((m) => [...m, { role: "user", content, ts: Date.now() / 1000 }]);
-      const r = await apiFetch(`/copilot/conversations/${cid}/messages`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content, lang }),
+      const d = await withRetry(async () => {
+        const r = await apiFetch(`/copilot/conversations/${cid}/messages`, {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content, lang }),
+        });
+        return r.json();
       });
-      const d = await r.json();
       setMsgs((m) => [...m, { ...d.message, fresh: true }]);
       setConvs((cs) => [d.conversation, ...cs.filter((c) => c.id !== d.conversation.id)]);
     } catch (e) {
       if (e instanceof ApiError && e.isForbidden) setLocked(true);
-      setMsgs((m) => [...m, { role: "assistant", content: "I couldn't reach the intelligence core. Check the connection and try again.", ts: Date.now() / 1000 }]);
+      setMsgs((m) => [...m, { role: "assistant", content: e instanceof ApiError && e.isForbidden ? "Your sign-in no longer allows the Copilot." : RESTARTING_REPLY, ts: Date.now() / 1000 }]);
     } finally {
       setBusy(false);
       taRef.current?.focus();
