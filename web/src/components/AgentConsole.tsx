@@ -18,7 +18,7 @@ const SUGGESTIONS = [
   "Who are the accused in FIR-20345?",
   "How many murders in Mysuru in 2024?",
   "Which station has the most chain snatching?",
-  "Is SUS-1001 connected to SUS-8286?",
+  "Is SUS-7403 connected to SUS-8286?",
   "Which crimes are spiking?",
   "What is this platform?",
 ];

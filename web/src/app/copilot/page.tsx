@@ -37,7 +37,7 @@ function originLabel(path: string) {
 const STARTERS = [
   { icon: MapPinned, title: "What's happening in Bengaluru right now?", hint: "Live brief: FIRs, spikes, cameras" },
   { icon: FolderSearch, title: "Who are the accused in FIR-20345 and do any have warrants?", hint: "Reads the full case file" },
-  { icon: Users, title: "Is SUS-1001 connected to SUS-8286?", hint: "Traces the link graph" },
+  { icon: Users, title: "Is SUS-7403 connected to SUS-8286?", hint: "Traces the link graph" },
   { icon: Cctv, title: "Where was SUS-8286 last seen on CCTV?", hint: "Face-match sightings, 24 h" },
   { icon: Brain, title: "Which police station has the most chain snatching?", hint: "Ranks 140 stations" },
   { icon: AlertTriangle, title: "How many murders in Mysuru in 2024, and what about Belagavi?", hint: "Counts with follow-ups" },

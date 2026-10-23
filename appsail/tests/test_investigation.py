@@ -264,3 +264,12 @@ def test_a_console_chat_is_saved_where_the_copilot_page_lists_it(monkeypatch):
     fresh = client.post(f"{API}/agent", json={"query": "hello", "conversation_id": "nope"}, headers=h).get_json()
     assert fresh["conversation_id"] != cid
 
+
+
+def test_records_are_judged_against_their_own_extract_date(ix):
+    """Not the wall clock: the same corpus must give the same findings on any day, and the
+    extract's last registration is the reference pendency and the trend alerts use."""
+    last = ix["cm"]["CrimeRegisteredDate"].max().date()
+    assert I.as_of(ix) == last
+    assert I.integrity_summary(ix, limit=1)["as_of"] == str(last)
+    assert not any(f["code"] == "future_registration" for fl in I.integrity_flags(ix).values() for f in fl)

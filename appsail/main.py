@@ -1,5 +1,7 @@
 import sys
 import os
+import ctypes
+import gc
 
 # Ensure _vendor directory is in sys.path before any third-party imports
 _CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -2923,7 +2925,7 @@ def _fallback_reply(action, params):
     }.get(action, "")
 
 
-# Provider fallback chain: Groq (llama-3.3-70b) is tried FIRST because it answers in
+# Provider fallback chain: Groq (gpt-oss-120b, then its fallback models) is tried FIRST because it answers in
 # ~1s — critical for a live, voice-driven demo — with NVIDIA (minimax-m3) as a
 # higher-ceiling fallback. Any provider that errors, times out or returns empty is
 # skipped so the agent never dead-ends.
@@ -2933,7 +2935,12 @@ LLM_PROVIDERS = [
         "base_url": "https://api.groq.com/openai/v1",
         "key_env": "GROQ_API_KEY",
         "model_env": "GROQ_MODEL",
-        "model_default": "llama-3.3-70b-versatile",
+        "model_default": "openai/gpt-oss-120b",
+        # Groq retired llama-3.3-70b from this tier. Its token budget is per model per
+        # minute and one tool-calling answer spends most of a budget, so the copilot
+        # steps to these on a 429 instead of waiting it out.
+        "fallback_env": "GROQ_FALLBACK_MODELS",
+        "fallback_default": "openai/gpt-oss-20b,qwen/qwen3.8-27b",
     },
     {
         "name": "nvidia",
@@ -5161,9 +5168,31 @@ def _warmup():
         LOG.warning("Suspect-history index not prebuilt (%s); "
                     "the first case dossier will build it", e)
 
+    try:
+        started = time.time()
+        if investigation.prewarm():
+            LOG.info("Investigation index ready in %.1fs", time.time() - started)
+    except Exception as e:
+        LOG.warning("Investigation index not prebuilt (%s); /investigate will build it", e)
+    _trim_heap()
+
     # After the corpus, not before: retention touches only the runtime logs, and a
     # failure here must never delay the service becoming ready.
     _enforce_retention_on_boot()
+
+
+def _trim_heap():
+    """Give the memory freed by the start-up builds back to the OS.
+
+    Loading the corpus and models leaves the heap full of freed temporaries that glibc
+    keeps for reuse, so the container sits near its 512 MB limit while using far less;
+    the next burst of requests then gets it killed and every session with it."""
+    gc.collect()
+    if sys.platform.startswith("linux"):
+        try:
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+        except Exception as e:
+            LOG.info("malloc_trim unavailable: %s", e)
 
 
 # Kick the heavy load into the background as soon as the module is imported by gunicorn.

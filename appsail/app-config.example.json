@@ -1,10 +1,10 @@
 {
-  "command": "sh -c 'PYTHONPATH=_vendor python3 -m gunicorn --bind 0.0.0.0:${X_ZOHO_CATALYST_LISTEN_PORT} --workers 1 --threads 8 --timeout 180 --graceful-timeout 30 wsgi:app'",
+  "command": "sh -c 'MALLOC_ARENA_MAX=2 PYTHONPATH=_vendor python3 -m gunicorn --bind 0.0.0.0:${X_ZOHO_CATALYST_LISTEN_PORT} --workers 1 --threads 8 --timeout 180 --graceful-timeout 30 wsgi:app'",
   "build_path": ".",
   "stack": "python_3_13",
   "env_variables": {
     "GROQ_API_KEY": "gsk_REPLACE_WITH_YOUR_KEY",
-    "GROQ_MODEL": "llama-3.3-70b-versatile",
+    "GROQ_MODEL": "openai/gpt-oss-120b",
     "NVIDIA_API_KEY": "nvapi-REPLACE_WITH_YOUR_KEY",
     "NVIDIA_MODEL": "minimaxai/minimax-m3",
     "AUDIT_HMAC_KEY": "",

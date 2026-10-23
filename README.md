@@ -438,9 +438,12 @@ threshold, because real geography defeats thresholds: Koppal and Hosapete
   filtered counts and rankings by district / station / crime / year / month / time of day / weapon,
   shortest paths through the link graph, every ML output, and the platform's own documentation
   (`appsail/copilot_knowledge.py`).
-* **LLM tool-calling loop.** Groq `llama-3.3-70b-versatile` (NVIDIA fallback) decides which tools to
+* **LLM tool-calling loop.** Groq `openai/gpt-oss-120b` (NVIDIA fallback) decides which tools to
   call and chains them. Records the question names are resolved and pre-fetched first, so a typical
-  answer costs one round trip.
+  answer costs one round trip. Groq meters tokens per minute per model and one answer spends most of
+  a budget, so a rate-limited model hands over to `gpt-oss-20b`, then `qwen3.8-27b`
+  (`GROQ_FALLBACK_MODELS`) instead of waiting. The whole answer runs to a 20 s deadline
+  (`COPILOT_DEADLINE`), under the gateway's 30 s; near it the loop answers from what it has gathered.
 * **Works with no API key.** The same entity resolution and tools drive a deterministic engine that
   composes the answer when no provider is configured or all of them fail.
 * **Knows the platform as it is today.** `appsail/build_project_knowledge.py` indexes every

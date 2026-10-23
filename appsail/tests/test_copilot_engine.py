@@ -220,7 +220,7 @@ def test_llm_loop_calls_tools_masks_names_and_restores_them(cache, monkeypatch):
     sent = []
     real_name = cache["criminals"].set_index("criminal_id").loc["SUS-1001", "name"]
 
-    def fake_chat(providers, messages, tools):
+    def fake_chat(providers, messages, tools, deadline=None):
         sent.append(json.dumps(messages, default=str))
         tool_msgs = [m for m in messages if m.get("role") == "tool"]
         if not tool_msgs:
@@ -244,3 +244,58 @@ def test_a_failing_provider_falls_back_to_the_deterministic_engine(monkeypatch):
     monkeypatch.setattr(E, "_chat", lambda *a, **k: (None, None))
     r = _ask("how many murders in Mysuru in 2024?")
     assert r["mode"] == "deterministic" and "Mysuru" in r["reply"]
+
+
+def test_a_rate_limited_model_hands_over_to_the_next_without_waiting(monkeypatch):
+    """Groq meters tokens per model: on a 429 the next model is asked at once, and the
+    limited one is left alone until its wait is over."""
+    import openai
+    asked = []
+
+    class Limited(Exception):
+        status_code = 429
+
+    class FakeClient:
+        def __init__(self, **kw):
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+
+        def create(self, model, **kw):
+            asked.append(model)
+            if model == "first":
+                raise Limited("Rate limit reached ... Please try again in 7.5s.")
+            return SimpleNamespace(choices=[SimpleNamespace(message=_msg(content="ok"))])
+
+    monkeypatch.setattr(openai, "OpenAI", FakeClient)
+    monkeypatch.setenv("FAKE_KEY", "k")
+    monkeypatch.setenv("FAKE_MODEL", "first")
+    monkeypatch.setenv("FAKE_FALLBACK", "second")
+    monkeypatch.setattr(E, "_cooldown", {})
+    p = [{"name": "fake", "base_url": "x", "key_env": "FAKE_KEY", "model_env": "FAKE_MODEL",
+          "model_default": "first", "fallback_env": "FAKE_FALLBACK"}]
+    msg, _ = E._chat(p, [{"role": "user", "content": "hi"}], None)
+    assert msg.content == "ok" and asked == ["first", "second"]
+    E._chat(p, [{"role": "user", "content": "hi"}], None)
+    assert asked == ["first", "second", "second"], "the limited model was asked again inside its wait"
+
+
+def test_a_path_between_two_people_never_runs_through_an_officer(cache):
+    r = E.tool_network(cache, entity="SUS-7403", target="SUS-8286")
+    assert r.get("connected") and all(n["type"] != "Officer" for n in r["path"])
+
+
+def test_a_case_says_which_code_was_in_force_on_the_offence_date(cache):
+    r = E.tool_get_case(cache, case_ref="100050027202600005")
+    assert r["code_in_force"] == "BNS"
+    assert any("IPC 457" in f and "BNS" in f for f in r["statute_findings"])
+
+
+def test_two_districts_in_one_question_are_both_answered(cache):
+    idx = E._index(cache)
+    q = "How many murders in Mysuru in 2024, and what about Belagavi?"
+    calls = E.plan(q, idx, E.extract_entities(q, idx))
+    assert [a.get("district") for n, a in calls if n == "search_cases"] == ["Mysuru", "Belagavi"]
+
+
+def test_a_warrant_question_is_answered_about_warrants_without_the_ai(cache):
+    r = E.offline_answer("Who are the accused in FIR-20345 and do any have warrants?", cache)
+    assert "active warrant**" in r["reply"].split("\n")[0]

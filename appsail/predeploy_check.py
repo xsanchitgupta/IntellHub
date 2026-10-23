@@ -157,6 +157,14 @@ else:
             "with write access to the log could recompute it and hide a tampering. "
             "Set it to a long random value for any deployment holding real records.")
 
+    # Without it the signing key is drawn fresh on every start, so each restart — and
+    # AppSail restarts a container that touches its memory limit — signs every officer
+    # out mid-session and their next request is refused.
+    if not str(env.get("AUTH_SECRET") or "").strip():
+        warnings.append(
+            "AUTH_SECRET is not set — every container restart invalidates every "
+            "sign-in. Set it to a long random value.")
+
     # A single writer is a hard requirement of the chain, not a tuning choice.
     if "--workers" in cfg.get("command", ""):
         after = cfg["command"].split("--workers", 1)[1].strip().split()[0]

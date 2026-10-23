@@ -52,6 +52,10 @@ _cache_getter = lambda: {}      # noqa: E731 — replaced by configure()
 _suggest = None                 # (case_id, k) -> [suggestion]; main.py wires analytics in
 _lock = threading.Lock()
 _state = {"key": None, "ix": None}
+# The flag pass and the series pass are the two heaviest things a request can start.
+# Two requests arriving together on a cold index each built their own copy, and in a
+# 512 MB container that second copy is what tipped the worker over.
+_build_lock = threading.RLock()
 
 # Series: how alike two FIRs must be to read as one offender's work.
 SERIES_WINDOW_DAYS = 90
@@ -77,6 +81,15 @@ def configure(cache_getter, suggest=None):
 
 def today():
     return datetime.now(ZoneInfo("Asia/Kolkata")).date()
+
+
+def as_of(ix):
+    """The date the records are judged against: the day of the extract, i.e. its latest
+    registration, the same reference pendency and the trend alerts use. Against the
+    wall clock the findings on a fixed corpus changed every day, and this simulated one,
+    which runs to 2026-12-28, had its last ten weeks flagged as dated in the future."""
+    last = ix["cm"]["CrimeRegisteredDate"].max()
+    return last.date() if pd.notna(last) else today()
 
 
 # =============================================================================
@@ -297,15 +310,15 @@ CHECKS = {
 }
 
 QUESTIONS = {
-    "future_incident": "Correct the date of occurrence: {when} has not happened yet.",
-    "future_registration": "Correct the registration date: {when} has not happened yet.",
+    "future_incident": "Correct the date of occurrence: {when} is after the last day these records cover ({asof}).",
+    "future_registration": "Correct the registration date: {when} is after the last day these records cover ({asof}).",
     "information_before_incident": "Check the timestamps: information is logged at {info}, before the incident began at {when}.",
     "registered_before_information": "Check the timestamps: the FIR is dated {reg}, before the information was received on {info}.",
     "incident_ends_before_start": "Correct the incident window: it ends ({until}) before it starts ({when}).",
     "registration_delay": "Record the reason for the {days}-day delay between information ({info}) and registration ({reg}).",
     "arrest_before_incident": "Verify arrest {ref}: it is dated {date}, before the incident on {when}.",
     "chargesheet_before_registration": "Verify charge-sheet {ref}: it is dated {date}, before the FIR was registered on {reg}.",
-    "future_chargesheet": "Correct the date of charge-sheet {ref}: {date} has not happened yet.",
+    "future_chargesheet": "Correct the date of charge-sheet {ref}: {date} is after the last day these records cover ({asof}).",
     "chargesheet_status_lag": "Update the case status: charge-sheet {ref} was filed on {date}.",
     "status_without_chargesheet": "Attach the charge-sheet, or correct the status: no charge-sheet is on record.",
     "verdict_status_lag": "Update the case status: court case {ref} records '{verdict}'.",
@@ -326,10 +339,18 @@ def _flag(code, detail, cites, **q):
 
 def integrity_flags(ix, on=None):
     """{CaseMasterID: [flag]} for every FIR, computed once per day per corpus version."""
-    on = on or today()
+    on = on or as_of(ix)
     cached = ix["flags"].get(on)
     if cached is not None:
         return cached
+    with _build_lock:
+        cached = ix["flags"].get(on)
+        if cached is not None:
+            return cached
+        return _integrity_flags(ix, on)
+
+
+def _integrity_flags(ix, on):
     cm = ix["cm"]
     out = defaultdict(list)
     day = pd.Timestamp(on)
@@ -338,11 +359,11 @@ def integrity_flags(ix, on=None):
         return cm[mask.fillna(False)].itertuples(index=False)
 
     for r in each(cm["IncidentFromDate"].dt.normalize() > day):
-        out[r.CaseMasterID].append(_flag("future_incident", f"Incident is dated {_d(r.IncidentFromDate)}; today is {on}.",
-                                         [_fir(r.case_id)], when=_d(r.IncidentFromDate)))
+        out[r.CaseMasterID].append(_flag("future_incident", f"Incident is dated {_d(r.IncidentFromDate)}; the records run to {on}.",
+                                         [_fir(r.case_id)], when=_d(r.IncidentFromDate), asof=on))
     for r in each(cm["CrimeRegisteredDate"].dt.normalize() > day):
-        out[r.CaseMasterID].append(_flag("future_registration", f"Registered {_d(r.CrimeRegisteredDate)}; today is {on}.",
-                                         [_fir(r.case_id)], when=_d(r.CrimeRegisteredDate)))
+        out[r.CaseMasterID].append(_flag("future_registration", f"Registered {_d(r.CrimeRegisteredDate)}; the records run to {on}.",
+                                         [_fir(r.case_id)], when=_d(r.CrimeRegisteredDate), asof=on))
     for r in each(cm["InfoReceivedPSDate"] < cm["IncidentFromDate"]):
         out[r.CaseMasterID].append(_flag(
             "information_before_incident", f"Information {r.InfoReceivedPSDate:%Y-%m-%d %H:%M}, incident {r.IncidentFromDate:%Y-%m-%d %H:%M}.",
@@ -368,8 +389,8 @@ def integrity_flags(ix, on=None):
         if csr is not None:
             cs_cite = {"kind": "chargesheet", "id": csr["id"], "label": f"Charge-sheet {csr['id']}"}
             if pd.notna(csr["date"]) and csr["date"].normalize() > day:
-                out[cmid].append(_flag("future_chargesheet", f"Charge-sheet {csr['id']} is dated {_d(csr['date'])}; today is {on}.",
-                                       [_fir(r.case_id), cs_cite], ref=csr["id"], date=_d(csr["date"])))
+                out[cmid].append(_flag("future_chargesheet", f"Charge-sheet {csr['id']} is dated {_d(csr['date'])}; the records run to {on}.",
+                                       [_fir(r.case_id), cs_cite], ref=csr["id"], date=_d(csr["date"]), asof=on))
             if r.CaseStatusID == 1:
                 out[cmid].append(_flag("chargesheet_status_lag", f"Charge-sheet {csr['id']} dated {_d(csr['date'])}.",
                                        [_fir(r.case_id), {"kind": "chargesheet", "id": csr["id"], "label": f"Charge-sheet {csr['id']}"}],
@@ -471,7 +492,7 @@ def integrity_summary(ix, district=None, code=None, limit=50, on=None):
     rows.sort(key=lambda t: (-t[0], t[1]))
     total = int(len(cm) if not district else (cm["district"] == district).sum())
     return {
-        "as_of": str(on or today()), "firs_checked": total,
+        "as_of": str(on or as_of(ix)), "firs_checked": total,
         "firs_flagged": len(rows),
         "checks": [{"code": k, "severity": CHECKS[k][0], "title": CHECKS[k][1], "count": int(by_code.get(k, 0))}
                    for k in CHECKS],
@@ -506,6 +527,13 @@ def series_index(ix):
     """
     if ix["series"] is not None:
         return ix["series"]
+    with _build_lock:
+        if ix["series"] is None:
+            ix["series"] = _series_index(ix)
+        return ix["series"]
+
+
+def _series_index(ix):
     cm = ix["cm"].dropna(subset=["IncidentFromDate", "latitude", "longitude"])
     parent = {}
 
@@ -568,8 +596,19 @@ def series_index(ix):
             members = list(dict.fromkeys(A["CaseMasterID"].iloc[idx]))
             add("offender", members, {"signature": None,
                                       "person": {"id": pid, "name": ix["people"].get(pid, {}).get("name")}})
-    ix["series"] = {"series": out, "member_of": dict(member_of)}
-    return ix["series"]
+    return {"series": out, "member_of": dict(member_of)}
+
+
+def prewarm():
+    """Build the index, today's flags and the series at start-up, off the request path:
+    on a cold container the first /investigate view otherwise pays ~20 s for them and
+    the gateway gives up at 30."""
+    ix = index()
+    if ix is None:
+        return False
+    integrity_flags(ix)
+    series_index(ix)
+    return True
 
 
 def _series_card(ix, s):

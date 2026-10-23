@@ -193,7 +193,7 @@ TOPICS = {
             "Recharts, Google Maps / Leaflet, react-force-graph + three.js. Backend: Python 3.13, "
             "Flask, Gunicorn on Zoho Catalyst AppSail, pandas/numpy, networkx, scikit-learn "
             "1.7.2 (the whole ML layer), CSV-backed in-memory store. LLM: Groq "
-            "llama-3.3-70b-versatile first, NVIDIA as fallback, via OpenAI-compatible tool "
+            "openai/gpt-oss-120b first (gpt-oss-20b and qwen3.8-27b on a rate limit), NVIDIA as fallback, via OpenAI-compatible tool "
             "calling; a deterministic retrieval engine answers when no provider is reachable. "
             "Client and API are on separate Catalyst domains; models load from committed "
             "joblib artifacts."),

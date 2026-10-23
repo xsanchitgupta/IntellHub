@@ -42,11 +42,18 @@ import pandas as pd
 
 import copilot_knowledge
 import privacy
+import statutes
 
 LOG = logging.getLogger("ksp.copilot")
 
 MAX_TOOL_STEPS = int(os.environ.get("COPILOT_MAX_TOOL_STEPS", "6"))
 LLM_TIMEOUT_S = float(os.environ.get("COPILOT_LLM_TIMEOUT", "25"))
+# The whole answer, every tool round included. The Catalyst gateway drops a request at
+# 30 s, so an answer still thinking at 31 s reaches nobody; past this the loop answers
+# from what it has gathered, or hands over to the deterministic engine.
+DEADLINE_S = float(os.environ.get("COPILOT_DEADLINE", "20"))
+FINAL_RESERVE_S = 8.0            # left for one tool-less answer at the end
+_cooldown = {}                   # (provider, model) -> monotonic time it may be asked again
 
 _GRAPH_GETTER = None
 
@@ -348,6 +355,24 @@ def district_span(text, idx):
 def detect_district(text, idx):
     sp = district_span(text, idx)
     return sp[0] if sp else None
+
+
+def all_districts(text, idx):
+    """Every district named in text, in the order named: "Mysuru, and what about
+    Belagavi?" is two questions, and answering only the longest name drops one."""
+    low = (text or "").lower()
+    hits = []
+    for key, d in [(d.lower(), d) for d in idx.districts] + list(DISTRICT_ALIASES.items()):
+        if d in idx.districts:
+            hits += [(m.start(), m.end(), d) for m in re.finditer(r"(?<![a-z])" + re.escape(key) + r"(?![a-z])", low)]
+    out, taken = [], []
+    for a, b, d in sorted(hits, key=lambda h: (h[0], -(h[1] - h[0]))):
+        if any(a < y and x < b for x, y in taken):
+            continue                      # "Bengaluru" inside "Bengaluru Rural"
+        taken.append((a, b))
+        if d not in out:
+            out.append(d)
+    return out
 
 
 def detect_crime(text, idx):
@@ -684,6 +709,15 @@ def tool_get_case(cache, case_ref=None, **_):
     out = {"case_id": cid, "case_master_id": cm, "case_no": _clean(row.get("CaseNo")),
            "registered": _clean(row.get("timestamp"))}
     out.update(_rec(row, CASE_COLS))
+    # Which penal code governs depends on the offence date, not on the section text; a
+    # model reading "IPC 457" alone called a post-July-2024 booking correct.
+    when = row.get("timestamp")
+    if statutes.code_for(when):
+        booked = re.findall(r"\b(IPC|BNS)\s*([0-9]+[A-Za-z]?(?:\(\w+\))*)", str(row.get("ipc_bns_sections") or ""))
+        out["code_in_force"] = statutes.code_for(when)
+        found = statutes.check(booked, when)
+        if found:
+            out["statute_findings"] = [f["message"] for f in found]
     out["location"] = {"lat": _clean(row.get("latitude")), "lng": _clean(row.get("longitude"))}
     narrative = idx.reports.get(cid)
     if narrative:
@@ -1204,8 +1238,12 @@ def tool_network(cache, entity=None, target=None, **_):
         if not b:
             return {"error": f"'{target}' is not a node in the link graph"}
         import networkx as nx
+        # An investigating officer is not a link between two people: one IO handles
+        # dozens of unrelated files. The Network page leaves officers out of paths by
+        # default (network_intel._paths); the copilot follows the same rule.
+        H = nx.subgraph_view(G, filter_node=lambda n: n in (a, b) or G.nodes[n].get("type") != "Officer")
         try:
-            path = nx.shortest_path(G, a, b)
+            path = nx.shortest_path(H, a, b)
         except nx.NetworkXNoPath:
             return {"from": a, "to": b, "connected": False,
                     "note": "No chain of shared cases, identifiers or associates links them."}
@@ -1904,6 +1942,8 @@ def plan(text, idx, ents):
         return [("investigate", {"mode": "statute", "act": statute.group(1).upper(), "section": statute.group(2),
                                  "date": m.group(1) if m else None})]
     if ents["cases"] and _cue(low, ("inconsisten", "contradict", "integrity", "error", "wrong", "mistake", "what should i ask",
+                                    "right law", "correct law", "which law", "booked under", "right section",
+                                    "correct section", "ipc", "bns",
                                     "what to ask", "questions", "who did", "who could", "who committed", "who else",
                                     "hypothes", "suspect for", "suspects for", "lead", "section", "check this", "audit")):
         return [("investigate", {"mode": "case_check", "case_ref": c}) for c in ents["cases"][:2]]
@@ -2073,6 +2113,9 @@ def plan(text, idx, ents):
         sort = "severity" if _cue(low, ("severe", "serious", "worst", "dangerous")) else \
                "fatalities" if _cue(low, ("deadl", "fatal")) else "recent"
         if filters or _cue(low, ("how many", "count", "number of")):
+            many = all_districts(text, idx) if filters.get("district") else []
+            if len(many) > 1:
+                return [("search_cases", dict(filters, district=d, sort_by=sort)) for d in many[:3]]
             return [("search_cases", dict(filters, sort_by=sort))]
     if _cue(low, ("summary", "overview", "situation", "status of crime", "brief me", "briefing", "statistics", "stats")):
         return [("insight", {"topic": "overview"})]
@@ -2100,6 +2143,8 @@ def _say_case(c):
                       c.get("ipc_bns_sections")) if x]
     if mo:
         lines.append("- MO / sections: " + " · ".join(mo))
+    for f in c.get("statute_findings") or []:
+        lines.append(f"- **Wrong code for the offence date:** {f}")
     if c.get("fatalities") or c.get("injured"):
         lines.append(f"- Casualties: {c.get('fatalities') or 0} killed, {c.get('injured') or 0} injured; "
                      f"{c.get('witnesses') or 0} witnesses cited")
@@ -2770,10 +2815,17 @@ def _focused_answer(text, calls, results):
         if _cue(low, ("accused", "suspect", "who did", "who committed", "culprit", "involved", "offender")):
             if not acc:
                 return f"No accused are linked to FIR {cid} in the corpus."
-            return (f"FIR {cid} ({res.get('crime_type')}, {res.get('district')}) names {len(acc)} accused:\n"
-                    + "\n".join(f"- {a.get('name')} ({a['suspect_id']}) — {a.get('relationship')}, {a.get('risk_level')} risk, "
-                                f"{a.get('prior_firs', 0)} priors" + (", rowdy-sheeter" if a.get("rowdy_sheeter") else "")
-                                + (", active warrant" if a.get("active_warrant") else "") for a in acc))
+            out = (f"FIR {cid} ({res.get('crime_type')}, {res.get('district')}) names {len(acc)} accused:\n"
+                   + "\n".join(f"- {a.get('name')} ({a['suspect_id']}) — {a.get('relationship')}, {a.get('risk_level')} risk, "
+                               f"{a.get('prior_firs', 0)} priors" + (", rowdy-sheeter" if a.get("rowdy_sheeter") else "")
+                               + (", active warrant" if a.get("active_warrant") else "") for a in acc))
+            if "warrant" in low:
+                # Asked outright, so say it outright — silence reads as "not checked".
+                wanted = [f"{a.get('name')} ({a['suspect_id']})" for a in acc if a.get("active_warrant")]
+                verb = "has" if len(wanted) == 1 else "have"
+                head = f"**{len(wanted)} of the {len(acc)} accused in FIR {cid} {verb} an active warrant**"
+                out = head + (": " + ", ".join(wanted) + "." if wanted else ".") + "\n\n" + out
+            return out
         if _cue(low, ("victim",)):
             v = res.get("victim") or {}
             return f"The victim in FIR {cid} is {v.get('name') or 'not recorded'}" + (f", aged {v.get('age')}" if v.get("age") else "") + (f" ({v.get('gender')})" if v.get("gender") else "") + "."
@@ -2933,8 +2985,32 @@ def _parse_followups(text):
     return text[:m.start()].strip(), ups[:3]
 
 
-def _chat(providers, messages, tools):
-    """One completion against the first provider that answers. Returns (message, provider)."""
+def _models(p):
+    """The provider's model, then its fallbacks. Groq meters tokens per minute per model,
+    so a second model is a second budget rather than a second queue."""
+    names = [os.environ.get(p["model_env"], p["model_default"])]
+    if p.get("fallback_env"):
+        names += os.environ.get(p["fallback_env"], p.get("fallback_default", "")).split(",")
+    return list(dict.fromkeys(n.strip() for n in names if n and n.strip()))
+
+
+def _retry_after(e):
+    """Seconds a rate-limited model asked us to wait: the header, else Groq's message."""
+    try:
+        v = e.response.headers.get("retry-after")
+        if v:
+            return float(v)
+    except Exception:
+        pass
+    m = re.search(r"try again in (?:(\d+)m)?([\d.]+)(ms|s)", str(e))
+    if m:
+        return int(m.group(1) or 0) * 60 + float(m.group(2)) / (1000 if m.group(3) == "ms" else 1)
+    return 20.0
+
+
+def _chat(providers, messages, tools, deadline=None):
+    """One completion against the first provider and model that answers before the
+    deadline. Returns (message, provider)."""
     try:
         from openai import OpenAI
     except Exception as e:
@@ -2944,28 +3020,43 @@ def _chat(providers, messages, tools):
         key = os.environ.get(p["key_env"], "")
         if not key or key.startswith(("nvapi-****", "gsk_****")):
             continue
-        model = os.environ.get(p["model_env"], p["model_default"])
-        kwargs = dict(model=model, messages=messages, temperature=0.2, max_tokens=900)
-        if tools:
-            kwargs["tools"] = tools
-            kwargs["tool_choice"] = "auto"
-        if "gpt-oss" in model:
-            # Reasoning tokens count against max_tokens and the per-minute budget; the
-            # tools do the heavy lifting, so a short think is enough.
-            kwargs["reasoning_effort"] = os.environ.get("COPILOT_REASONING_EFFORT", "low")
-        client = OpenAI(base_url=p["base_url"], api_key=key, timeout=LLM_TIMEOUT_S, max_retries=1)
-        for attempt in range(2):
-            try:
-                resp = client.chat.completions.create(**kwargs)
-                return resp.choices[0].message, p["name"]
-            except Exception as e:
-                # A tool call that fails the provider's schema check is a sampling slip, not
-                # an outage: one fresh sample usually gets it right.
-                if attempt == 0 and "tool_use_failed" in str(e):
-                    LOG.info("copilot provider %s rejected a tool call; retrying once", p["name"])
-                    continue
-                LOG.warning("copilot provider %s failed: %s", p["name"], e)
-                break
+        for model in _models(p):
+            if _cooldown.get((p["name"], model), 0) > time.monotonic():
+                continue
+            left = (deadline - time.monotonic()) if deadline else LLM_TIMEOUT_S
+            if left < 3:
+                return None, None
+            kwargs = dict(model=model, messages=messages, temperature=0.2, max_tokens=900)
+            if tools:
+                kwargs["tools"] = tools
+                kwargs["tool_choice"] = "auto"
+            if "gpt-oss" in model:
+                # Reasoning tokens count against max_tokens and the per-minute budget; the
+                # tools do the heavy lifting, so a short think is enough.
+                kwargs["reasoning_effort"] = os.environ.get("COPILOT_REASONING_EFFORT", "low")
+            # No client-side retries: on a 429 the client sleeps out the wait, and the
+            # next model's budget is free now.
+            client = OpenAI(base_url=p["base_url"], api_key=key, timeout=min(LLM_TIMEOUT_S, left), max_retries=0)
+            for attempt in range(2):
+                try:
+                    resp = client.chat.completions.create(**kwargs)
+                    return resp.choices[0].message, p["name"]
+                except Exception as e:
+                    # A tool call that fails the provider's schema check is a sampling slip, not
+                    # an outage: one fresh sample usually gets it right.
+                    if attempt == 0 and "tool_use_failed" in str(e):
+                        LOG.info("copilot provider %s rejected a tool call; retrying once", p["name"])
+                        continue
+                    if getattr(e, "status_code", None) == 429 or "rate_limit" in str(e):
+                        wait = _retry_after(e)
+                        _cooldown[(p["name"], model)] = time.monotonic() + wait
+                        LOG.info("copilot %s/%s rate-limited for %.1fs; trying the next model", p["name"], model, wait)
+                    elif getattr(e, "status_code", None) == 404 or "decommissioned" in str(e):
+                        _cooldown[(p["name"], model)] = time.monotonic() + 3600
+                        LOG.warning("copilot %s/%s is not served (%s); skipping it for an hour", p["name"], model, e)
+                    else:
+                        LOG.warning("copilot provider %s/%s failed: %s", p["name"], model, e)
+                    break
     return None, None
 
 
@@ -3002,17 +3093,21 @@ def llm_answer(text, cache, providers, history=None, lang_directive="", briefing
     tools = tool_specs()
     nav = None
     provider = None
+    deadline = time.monotonic() + DEADLINE_S
     for step in range(MAX_TOOL_STEPS + 1):
-        msg, provider = _chat(providers, messages, tools if step < MAX_TOOL_STEPS else None)
-        if msg is None and step > 0:
+        # Near the deadline, stop gathering and answer from what is already in hand.
+        last = step >= MAX_TOOL_STEPS or (step > 0 and deadline - time.monotonic() < FINAL_RESERVE_S)
+        msg, provider = _chat(providers, _flatten(messages) if last else messages, None if last else tools, deadline)
+        if msg is None and step > 0 and not last:
             # A provider that rejects a malformed tool call mid-loop still has the
             # evidence gathered so far in context; ask once more for a plain answer.
-            msg, provider = _chat(providers, _flatten(messages), None)
+            msg, provider = _chat(providers, _flatten(messages), None, deadline)
         if msg is None:
             return None
-        calls = getattr(msg, "tool_calls", None) or []
+        calls = [] if last else (getattr(msg, "tool_calls", None) or [])
         if not calls:
-            content = (msg.content or "").strip()
+            # Some fallback models think aloud in <think> tags; the officer gets the answer.
+            content = re.sub(r"<think>.*?</think>", "", msg.content or "", flags=re.S).strip()
             if not content:
                 return None
             reply, ups = _parse_followups(privacy.restore(content))
