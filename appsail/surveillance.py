@@ -365,12 +365,16 @@ def match_face(probe, k=3):
 
 
 def _match_faces_batch(probes, k=3):
-    """Same as match_face for many probes, chunked so memory stays small."""
+    """Same as match_face for many probes, chunked so memory stays small.
+
+    A chunk is chunk x gallery float64 similarities and argpartition copies it again; at
+    512 probes against 9,000 people that was ~110 MB at once, which on its own tipped
+    the 512 MB container over the first time the CCTV page asked for the model card."""
     out = []
     g = _state["gallery"]
-    for s in range(0, len(probes), 512):
-        sims = probes[s:s + 512] @ g.T
-        top = np.argpartition(-sims, k, axis=1)[:, :k]
+    for s in range(0, len(probes), 64):
+        sims = probes[s:s + 64] @ g.T
+        top = np.argpartition(sims, -k, axis=1)[:, -k:]
         for row, idx in zip(sims, top):
             idx = idx[np.argsort(-row[idx])]
             cands = [{"suspect_id": _state["gallery_ids"][i], "similarity": round(float(row[i]), 4)} for i in idx]

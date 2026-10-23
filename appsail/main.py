@@ -5176,6 +5176,18 @@ def _warmup():
         LOG.warning("Investigation index not prebuilt (%s); /investigate will build it", e)
     _trim_heap()
 
+    # The camera network, the face gallery and the matcher's measured error rates are
+    # built on first use; the first CCTV or map visit after a restart used to pay
+    # ~150 MB for them on top of a live request, which is what restarted the container.
+    try:
+        started = time.time()
+        surveillance.alerts(data_cache, None, limit=1)
+        surveillance.evaluate(data_cache)
+        LOG.info("Surveillance network ready in %.1fs", time.time() - started)
+    except Exception as e:
+        LOG.warning("Surveillance network not prebuilt (%s); the CCTV page will build it", e)
+    _trim_heap()
+
     # After the corpus, not before: retention touches only the runtime logs, and a
     # failure here must never delay the service becoming ready.
     _enforce_retention_on_boot()

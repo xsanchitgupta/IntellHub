@@ -117,6 +117,23 @@ const normaliser = `<script>(function(){try{var p=location.pathname;` +
   `if(p.slice(-11)==="/index.html"){history.replaceState(null,"",` +
   `p.slice(0,-10)+location.search+location.hash);}}catch(e){}})();</script>`;
 
+/**
+ * Reload once when one of the app's own scripts or stylesheets fails to arrive.
+ *
+ * Catalyst's static host answers a burst of requests with 429 and a JSON body, which
+ * the browser refuses to run as a script (nosniff). Lose the runtime chunk that way
+ * and React never starts, so nothing inside the app — not even its error boundary —
+ * can recover: the officer is left with a dead page. This listener is plain script,
+ * registered before any bundle loads, and capture-phase because resource errors do
+ * not bubble. The timestamp (shared with the error boundary) allows one reload per
+ * 30 s, so a file that is genuinely missing cannot become a reload loop.
+ */
+const recovery = `<script>(function(){window.addEventListener("error",function(e){` +
+  `var t=e.target,u=t&&(t.src||t.href)||"";if(!t||(t.tagName!=="SCRIPT"&&t.tagName!=="LINK")||` +
+  `u.indexOf("/_next/")<0)return;try{var k="ksp.chunk-reload",l=+sessionStorage.getItem(k)||0;` +
+  `if(Date.now()-l<30000)return;sessionStorage.setItem(k,String(Date.now()));}catch(x){return;}` +
+  `setTimeout(function(){location.reload();},1500);},true);})();</script>`;
+
 let injected = 0;
 for (const file of globSync(`${OUT}/**/*.html`)) {
   if (file.endsWith("404.html")) continue;   // the resolver must keep its own URL
@@ -124,9 +141,9 @@ for (const file of globSync(`${OUT}/**/*.html`)) {
   if (html.includes("/index.html\"")) continue;
   const at = html.indexOf("<head>");
   if (at === -1) continue;
-  writeFileSync(file, html.slice(0, at + 6) + normaliser + html.slice(at + 6), "utf8");
+  writeFileSync(file, html.slice(0, at + 6) + normaliser + recovery + html.slice(at + 6), "utf8");
   injected++;
 }
 
 console.log(`postbuild: client-package.json copied, 404.html written as a path ` +
-            `resolver, URL normaliser injected into ${injected} page(s)`);
+            `resolver, URL normaliser and load-failure reload injected into ${injected} page(s)`);
