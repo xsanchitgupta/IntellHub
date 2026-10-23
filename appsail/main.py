@@ -5193,6 +5193,21 @@ def _warmup():
         LOG.warning("Surveillance network not prebuilt (%s); the CCTV page will build it", e)
     _trim_heap()
 
+    # Kavya's first question loaded the LLM client library, the copilot's name index,
+    # the platform knowledge and the statewide briefing: ~70 MB inside a live request,
+    # and on the live container the first question after a restart restarted it again.
+    try:
+        started = time.time()
+        import openai  # noqa: F401
+        copilot_knowledge.platform_map()
+        copilot_knowledge.describe_live("summary")
+        build_intelligence_briefing()
+        copilot_engine.offline_answer("Who are the accused in FIR-20345?", data_cache)
+        LOG.info("Copilot ready in %.1fs", time.time() - started)
+    except Exception as e:
+        LOG.warning("Copilot not prebuilt (%s); the first question will build it", e)
+    _trim_heap()
+
     # After the corpus, not before: retention touches only the runtime logs, and a
     # failure here must never delay the service becoming ready.
     _enforce_retention_on_boot()
